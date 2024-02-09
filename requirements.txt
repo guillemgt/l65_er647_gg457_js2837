@@ -6,5 +6,6 @@ scikit-learn-extra==0.3.0
 scipy==1.11.4
 seaborn==0.13.0
 torchinfo==1.8.0
+torch_geometric==2.4.0
 tqdm==4.66.1
 wandb==0.16.1
