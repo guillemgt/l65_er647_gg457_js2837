@@ -192,3 +192,8 @@ pip-wheel-metadata/
 
 # vim edit buffer
 *.swp
+
+*.pickle
+
+# Experiment logs and artifacts
+*logs/
