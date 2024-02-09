@@ -158,3 +158,37 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+
+# CUSTOM
+.vscode/
+scripts/pcqm4m/**/*.zip
+scripts/pcqm4m/**/*.sdf
+scripts/pcqm4m/**/*.xyz
+scripts/pcqm4m/**/*.csv
+!scripts/pcqm4m/**/periodic_table.csv
+scripts/pcqm4m/**/*.gz
+scripts/pcqm4m/**/*.tsv
+scripts/pcqm4m/pcqm4m-v2/
+slurm_history/
+datasets/
+pretrained/
+results/
+vocprep/benchmark_RELEASE/
+vocprep/voc_viz_files/
+vocprep/VOC/benchmark_RELEASE/
+vocprep/VOC/*.tgz
+vocprep/VOC/*.pickle
+vocprep/VOC/*.pkl
+vocprep/VOC/*.zip
+splits/
+wandb/
+.idea
+*.bak
+
+pip-wheel-metadata/
+# pyenv
+.python-version
+
+# vim edit buffer
+*.swp
