@@ -1,0 +1,30 @@
+program: /home/er647/projects/l65_er647_gg457_js2837/src/run_experiment.py # Path to the program to run
+entity: evangeorgerex
+project: L65 # Project name
+
+name: 7cd58d36_descriptive_title
+
+command:
+- ${env}
+- ${interpreter}
+- ${program}
+# - --hpc_run
+# - --num_workers
+# - 31 # optimal for HPC
+- --tags
+- 7cd58d36 # RUN python ./generate_uuid.py in the terminal to generate a new tag for each experiment
+- --notes
+- "Describe the experiment"
+- ${args}
+
+method: grid
+parameters:
+  dataset:
+
+  seed_model_init:  # number of folds
+    distribution: categorical
+    values:
+    - 0
+    - 1
+    - 2
+

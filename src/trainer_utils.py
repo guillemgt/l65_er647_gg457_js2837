@@ -16,7 +16,9 @@ from models import get_model
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('utils/trainer_utils.py')
 
-def train_model(args, data_module, train_unshuffled_loader, wandb_logger=None):
+# TODO best model callback. Must save best model somewhere
+
+def train_model(args, data_module, wandb_logger=None):
     """
     Return 
     - Pytorch Lightning Trainer
@@ -79,8 +81,7 @@ def train_model(args, data_module, train_unshuffled_loader, wandb_logger=None):
         accelerator=args.accelerator,
         devices=args.num_gpus,
         precision=args.precision,
-        # detect_anomaly=True,
-        detect_anomaly=False,
+        detect_anomaly=(not args.hpc_run),
         overfit_batches=args.overfit_batches,
         deterministic=args.deterministic,
     )

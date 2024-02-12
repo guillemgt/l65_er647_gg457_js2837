@@ -5,6 +5,9 @@ import os
 import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split
+from torch_geometric.datasets import ZINC, GNNBenchmarkDataset
+from torch_geometric.loader import DataLoader
+import torch_geometric.transforms as T
 from pytorch_lightning import LightningDataModule
 
 logging.basicConfig(level=logging.INFO)
@@ -26,48 +29,39 @@ class CustomDataModule(LightningDataModule):
     def test_dataloader(self):
         return self.test_loader
 
-def get_train_val_test_sets(dataset_name, val_split_seed, prev_run_name_for_dynamics, keep_full=False):
-    logger.info(f'Fetching train, val, and test sets according to args. dataset_name: {dataset_name} | val_split_seed: {val_split_seed} | prev_run_name_for_dynamics: {prev_run_name_for_dynamics}')
+def get_train_val_test_sets(dataset_name, keep_full=False):
+    logger.info(f'Fetching train, val, and test sets according to args. dataset_name: {dataset_name}')
     
     # Define transformations for image datasets
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
-    ])
+    ]) 
 
-    if dataset_name == 'cifar10':
-        train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-        test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
-        
-    elif dataset_name == 'cifar100':
-        train_dataset = datasets.CIFAR100(root='./data', train=True, download=True, transform=transform)
-        test_dataset = datasets.CIFAR100(root='./data', train=False, download=True, transform=transform)
-        
-    elif dataset_name == 'mnist':
-        train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-        test_dataset = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+    if dataset_name == 'ZINC':
+        transform = T.AddRandomWalkPE(walk_length=20, attr_name='pe')
+        train_dataset = ZINC(root='./data', subset=True, split='train', pre_transform=transform)
+        val_dataset = ZINC(root='./data', subset=True, split='val', pre_transform=transform)
+        test_dataset = ZINC(root='./data', subset=True, split='test', pre_transform=transform)
+    elif dataset_name == 'CSL':
+        transform = T.AddRandomWalkPE(walk_length=20, attr_name='pe')
+        train_dataset = GNNBenchmarkDataset(root='./data', name='CSL', split='train', pre_transform=transform)
+        val_dataset = GNNBenchmarkDataset(root='./data', name='CSL', split='val', pre_transform=transform)
+        test_dataset = GNNBenchmarkDataset(root='./data', name='CSL', split='test', pre_transform=transform)
     else:
         raise ValueError("Unknown dataset")
     
     if keep_full:
         return train_dataset, test_dataset
-    # Split the training dataset into train and validation
-    local_generator = torch.Generator()
-    if val_split_seed:
-        local_generator.manual_seed(val_split_seed)
-    else:
-        if prev_run_name_for_dynamics:
-            raise Exception("if using datamapped subset for training, val split seed for prev run must be provided.")
-        val_split_seed = local_generator.initial_seed()
     train_size = int(0.8 * len(train_dataset))
     val_size = len(train_dataset) - train_size
-    train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size], generator=local_generator)
+    train_dataset, val_dataset = random_split(train_dataset, [train_size, val_size])
 
     return train_dataset, val_dataset, test_dataset
 
     
 def get_dataloaders(args):
-    train_dataset, val_dataset, test_dataset = get_train_val_test_sets(args.dataset, args.val_split_seed, args.prev_run_name_for_dynamics)
+    train_dataset, val_dataset, test_dataset = get_train_val_test_sets(args.dataset)
 
     logger.info(f'Fetching dataloaders.')
     # Create data loaders
@@ -79,17 +73,8 @@ def get_dataloaders(args):
 
     return train_loader, train_unshuffled_loader, val_loader, test_loader
 
-def preprocess_cifar10(dataset):
-    return dataset
+def get_datamodule(args):
+    train_loader, train_unshuffled_loader, val_loader, test_loader = get_dataloaders(args)
+    data_module = CustomDataModule(train_loader, val_loader, test_loader)
+    return data_module
 
-def preprocess_cifar100(dataset):
-    return dataset
-
-def preprocess_mnist(dataset):
-    return dataset
-
-def preprocess_speechcommands(dataset):
-    return dataset
-
-def preprocess_urbansounds8k(dataset):
-    return dataset

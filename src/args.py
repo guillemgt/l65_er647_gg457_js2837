@@ -4,14 +4,17 @@ parser = argparse.ArgumentParser(description='State Space Graph Neural networks'
 
 
 # Dataset
-parser.add_argument('--dataset', type=str, required=False, choices=['cifar10', 'cifar100', 'mnist', 'speechcommands', 'urbansound8k', 'pass_via_subset_argument'])
-# parser.add_argument('--small_dataset', action='store_true', help='(for debugging) True if using a small sample of data from the training set.')
+parser.add_argument('--dataset', type=str, default='CSL', choices=['CSL', 'ZINC'])
 
-# Model 
-# parser.add_argument('--model', type=str, required=True, choices=['resnet', 'efficientnet', 'visualtransformer', 'vgg', 'mobilenet'])
-# parser.add_argument('--model_size', type=str, required=True, choices=['small', 'medium', 'large'])
-# parser.add_argument('--pretrained', action='store_true', help='If True, use pretrained weights (usually pretrained on ImageNet).')
-# parser.add_argument('--pretrained_from_github', action='store_true', help='If True, will use an already high-performing trained model for the specific dataset as defined in --dataset.')
+# Graph Model 
+parser.add_argument('--graph_model_type', type=str, default='mamba', choices=['mamba'])
+parser.add_argument('--graph_model_channels', type=int, default=64)
+parser.add_argument('--graph_model_pe_dim', type=int, default=8)
+parser.add_argument('--graph_model_num_layers', type=int, default=10)
+parser.add_argument('--graph_model_shuffle_ind', type=int, default=0)
+parser.add_argument('--graph_model_d_conv', type=int, default=4)
+parser.add_argument('--graph_model_d_state', type=int, default=16)
+parser.add_argument('--graph_model_order_by_degree', action='store_true')
 
 # Training Configuration
 parser.add_argument('--epochs', type=int, default=50, help='Maximum number of epochs for training.')
@@ -29,6 +32,7 @@ parser.add_argument('--logging_interval', type=int, default=100, help='Interval 
 parser.add_argument('--save_top_k', type=int, default=1, help='Select k-best model checkpoints to save for each run.')
 parser.add_argument('--test_only', action='store_true', help='If True, will only run testing, no training or validation will be performed.')
 
+parser.add_argument('--subset_argument', type=str, help='Gouped arg configuration.')
 
 # Validation
 parser.add_argument('--metric_model_selection', type=str, default='val_loss',
@@ -42,7 +46,8 @@ parser.add_argument('--train_on_full_data', action='store_true', dest='train_on_
 parser.add_argument('--overfit_batches', type=int, default=0, help='PyTorch Lightning trick to pick only N batches and iteratively overfit on them. Useful for debugging. Default set to 0, i.e. normal behaviour.')
 
 # Weights & Biases (wandb) Integration
-parser.add_argument('--wandb_project_name', type=str, default='TODO') # TODO
+parser.add_argument('--wandb_entity_name', type=str, default='evangeorgerex')
+parser.add_argument('--wandb_project_name', type=str, default='L65') #  
 parser.add_argument('--wandb_run_name', type=str, default=f'run_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
 parser.add_argument('--wandb_log_freq', type=int, default=10)
 parser.add_argument('--group', type=str, help="Group runs in wand")
@@ -54,6 +59,17 @@ parser.add_argument('--wandb_log_model', action='store_true', dest='wandb_log_mo
 parser.set_defaults(wandb_log_model=False)
 parser.add_argument('--disable_wandb', action='store_true', dest='disable_wandb', help='True if you dont want to create wandb logs.')
 parser.set_defaults(disable_wandb=False)
+
+# Experiment set up
+parser.add_argument('--hpc_run', action='store_true', dest='hpc_run', help='True for when running on HPC')
+
+# Seeds
+
+parser.add_argument('--seed_model_init', type=int, default=42, help='Seed for initializing the model (to have the same weights)')
+parser.add_argument('--seed_training', type=int, default=42, help='Seed for training (e.g., batch ordering)')
+
+parser.add_argument('--seed_kfold', type=int, help='Seed used for doing the kfold in train/test split')
+parser.add_argument('--seed_validation', type=int, help='Seed used for selecting the validation split.')
 
 def apply_subset_arguments(subset_args_str, args):
 
