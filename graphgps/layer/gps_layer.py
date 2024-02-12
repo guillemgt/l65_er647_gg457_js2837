@@ -311,6 +311,84 @@ class GPSLayer(nn.Module):
             elif self.global_model_type == 'BigBird':
                 h_attn = self.self_attn(h_dense, attention_mask=mask)
             
+            elif self.global_model_type == 'Mamba_new':
+                # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
+                # (and also our new code)
+
+                # NOTE(guillem): naming conventions of graph-mamba's global_mode_type:
+                #   permute = hybrid with 5 replaced by 1 for averaging during inference:
+                #       basically they randomly permute the orders before applying any heuristic
+                #   multi (doesn't seem to be used):
+                #       different mamba layers running in parallel
+                #   noise:
+                #       adds noise to the heuristics
+                #   bucket:
+                #       colors each node randomly and runs mamba for the sequences of nodes in each color
+                #   cluster:
+                #       similar to bucket but instead of random colors, it permutes nodes within a cluster
+                #   degree, eigen, RWSE:
+                #       different heuristics that are used
+
+                # TODO(guillem): these should be arguments of the model
+                permute_iterations = 1
+                use_noise = False
+                buckets_num = 1
+                
+                # TODO(guillem): move this somewhere else
+                def heuristic_degree(batch):
+                    h = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
+                    return [h]
+                def heuristic_degree_bidirectional(batch):
+                    h = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
+                    return [h, -h]
+                def heuristic_eigencentrality(batch):
+                    return [batch.EigCentrality]
+                def heuristic_RWSE(batch):
+                    return [-torch.sum(batch.pestat_RWSE, dim=1)]
+
+                heuristics = [heuristic_degree]
+                mamba_arr = []
+                heuristic_values = sum((h(batch) for h in heuristics), [])
+                for i in range(min(permute_iterations, 1)):
+                    for heuristic_ in heuristic_values:
+                        if use_noise:
+                            heuristic_noise = torch.rand_like(heuristic_).to(heuristic_.device)
+                            heuristic = heuristic_ + heuristic_noise
+                        else:
+                            heuristic = heuristic_
+                        
+                        if buckets_num > 1:
+                            indices_arr, emb_arr = [], []
+                            bucket_assign = torch.randint_like(heuristic, 0, self.NUM_BUCKETS).to(heuristic.device)
+                            for i in range(buckets_num):
+                                ind_i = (bucket_assign==i).nonzero().squeeze()
+                                h_ind_perm_sort = lexsort([heuristic[ind_i], batch.batch[ind_i]])
+                                h_ind_perm_i = ind_i[h_ind_perm_sort]
+                                h_dense, mask = to_dense_batch(h[h_ind_perm_i], batch.batch[h_ind_perm_i])
+                                h_dense = self.self_attn(h_dense)[mask]
+                                indices_arr.append(h_ind_perm_i)
+                                emb_arr.append(h_dense)
+                            h_ind_perm_reverse = torch.argsort(torch.cat(indices_arr))
+                            h_attn = torch.cat(emb_arr)[h_ind_perm_reverse]
+
+                        elif permute_iterations > 1:
+                            h_ind_perm = permute_within_batch(batch.batch)
+                            h_ind_perm_1 = lexsort([heuristic[h_ind_perm], batch.batch[h_ind_perm]])
+                            h_ind_perm = h_ind_perm[h_ind_perm_1]
+                            h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
+                            h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                            h_attn = self.self_attn(h_dense)[mask][h_ind_perm_reverse]
+
+                        else:
+                            h_ind_perm = lexsort([heuristic, batch.batch])
+                            h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
+                            h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                            h_attn = self.self_attn(h_dense)[mask][h_ind_perm_reverse]
+
+                        mamba_arr.append(h_attn)
+
+                h_attn = sum(mamba_arr) / len(mamba_arr)
+            
             elif self.global_model_type == 'Mamba':
                 h_attn = self.self_attn(h_dense)[mask]                
 
