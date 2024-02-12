@@ -22,60 +22,38 @@ def process_results(args):
     return
 
 def main():
-    try:
-        # ================================
-        # SET UP ARGS
-        # ================================
-        args = parser.parse_args()
-        apply_subset_arguments(args.subset_argument, args)
-        # ================================
-        # CONFIGURE WANDB
-        # ================================
-        if args.disable_wandb:
-            os.environ['WANDB_MODE'] = 'disabled'
-        wandb.init(project=args.wandb_project_name, config=args)
+    # ================================
+    # SET UP ARGS
+    # ================================
+    args = parser.parse_args()
+    apply_subset_arguments(args.subset_argument, args)
+    # ================================
+    # CONFIGURE WANDB
+    # ================================
+    if args.disable_wandb:
+        os.environ['WANDB_MODE'] = 'disabled'
+    wandb.init(project=args.wandb_project_name, config=args)
+
+    wandb_logger = create_wandb_logger(args)
+    # wandb.run.name = f"{get_run_name(args)}_{args.suffix_wand_run_name}_{wandb.run.id}"
+    wandb.run.name = args.wandb_run_name
+
+    # ================================
+    # FETCH DATASET
+    # ================================
     
-        wandb_logger = create_wandb_logger(args)
-        # wandb.run.name = f"{get_run_name(args)}_{args.suffix_wand_run_name}_{wandb.run.id}"
-        wandb.run.name = args.wandb_run_name
+    data_module = get_datamodule(args)
+    
+    # ================================
+    # UNDERGO TRAINING
+    # ================================
+    train_model(
+        args, data_module, wandb_logger
+    )
+    
+    process_results(args)
+    
+    wandb.finish()
 
-        # ================================
-        # FETCH DATASET
-        # ================================
-        
-        data_module = get_datamodule(args)
-        
-        # ================================
-        # UNDERGO TRAINING
-        # ================================
-        train_model(
-            args, data_module, wandb_logger
-        )
-        
-        process_results(args)
-        
-        wandb.finish()
-        
-
-    except OutOfMemoryError as oom_error:
-        # Log the error to wandb
-        wandb.log({"error": str(oom_error)})
-
-        # Mark the run as failed
-        wandb.run.fail()
-        
-        wandb.finish(exit_code=-1)
-        
-
-    except Exception as e:
-        # Handle other exceptions
-        print(traceback.print_exc(), file=sys.stderr)
-        print(f"An error occurred: {e}\n Terminating run here.")
-
-        # Optionally mark the run as failed for other critical exceptions
-        wandb.run.fail()
-        wandb.finish(exit_code=-1)
-
-        
 if __name__ == '__main__':
     main()

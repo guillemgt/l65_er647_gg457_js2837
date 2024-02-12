@@ -53,20 +53,15 @@ def detach_tensors(tensors):
 	
 	return detached_tensors
 
-def reshape_batch(batch):
-	"""
-	When the dataloaders create multiple samples from one original sample, the input has size (batch_size, no_samples, D)
-	
-	This function reshapes the input from (batch_size, no_samples, D) to (batch_size * no_samples, D)
-	"""
-	x, edge_index, edge_attr, y, pe, batch, ptr = batch
-	x, y = batch
-	x = x.reshape(-1, x.shape[-1])
-	y = y.reshape(-1)
-
-	return x, y
-
-
+def unpack_batch(batch):
+    x = batch['x']
+    edge_index = batch['edge_index']
+    edge_attr = batch['edge_attr']
+    y_true = batch['y']
+    pe = batch['pe']
+    batch_indices = batch['batch']
+    ptr = batch['ptr']
+    return x, edge_index, edge_attr, y_true, pe, batch_indices, ptr
 class TrainingLightningModule(pl.LightningModule):
 	"""
 	General class to be inherited by all implemented models (e.g., MLP, CAE, FsNet etc.)
@@ -104,10 +99,10 @@ class TrainingLightningModule(pl.LightningModule):
 			self.log(f'{key}/AUROC_weighted{dataloader_name}', roc_auc_score(y_true, y_pred, average='weighted'), sync_dist=self.args.hpc_run)
 
 	def training_step(self, batch, batch_idx):
-		x, y_true = batch
+     
+		x, edge_index, edge_attr, y_true, pe, batch_indices, ptr = unpack_batch(batch)
 
-
-		y_hat = self.forward(x)
+		y_hat = self.forward(x, pe, edge_index, edge_attr, batch_indices)
 
 		losses = self.compute_loss(y_true, y_hat)
 
@@ -132,9 +127,9 @@ class TrainingLightningModule(pl.LightningModule):
 		- dataloader_idx (int) tells which dataloader is the `batch` coming from
 		"""
 
-		x, y_true = reshape_batch(batch)
+		x, edge_index, edge_attr, y_true, pe, batch_indices, ptr = unpack_batch(batch)
 
-		y_hat = self.forward(x)
+		y_hat = self.forward(x, pe, edge_index, edge_attr, batch_indices)
 
 		losses = self.compute_loss(y_true, y_hat)
 
@@ -175,9 +170,11 @@ class TrainingLightningModule(pl.LightningModule):
 
 	def test_step(self, batch, batch_idx, dataloader_idx=0):
 		'''accommodates multiple dataloaders'''
-		x, y_true = reshape_batch(batch)
-		y_hat, x_hat, sparsity_weights = self.forward(x, test_time=True)
-		losses = self.compute_loss(y_true, y_hat, x, x_hat, sparsity_weights)
+		x, edge_index, edge_attr, y_true, pe, batch_indices, ptr = unpack_batch(batch)
+
+		y_hat = self.forward(x, pe, edge_index, edge_attr, batch_indices)
+
+		losses = self.compute_loss(y_true, y_hat)
 
 		output =  {
 			'losses': detach_tensors(losses),
