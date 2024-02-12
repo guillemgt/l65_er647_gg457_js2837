@@ -4,10 +4,11 @@ import wandb
 import pandas as pd
 from pytorch_lightning.loggers import WandbLogger
 
-def create_wandb_logger(args, project_name):
+def create_wandb_logger(args):
 	wandb.finish()
 	wandb_logger = WandbLogger(
-		project=project_name,
+        entity=args.wandb_entity_name,
+		project=args.wandb_project_name,
 		group=args.group,
 		job_type=args.job_type,
 		tags=args.tags,
@@ -42,7 +43,7 @@ def get_metrics(run, metric_names):
         metrics[name] = run.summary.get(name)
     return metrics
 
-def get_runs_dataframe(project_name, entity_name='l46_datamaps'):
+def get_runs_dataframe(project_name, entity_name='evangeorgerex'):
     api = wandb.Api()
     runs = api.runs(f"{entity_name}/{project_name}")
         
@@ -63,38 +64,3 @@ def get_runs_dataframe(project_name, entity_name='l46_datamaps'):
 
 def get_run_id_from_run_name(run_name, run_df):
     return run_df.loc[run_df['wandb_run_name'] == run_name, 'id'].iloc[0]
-
-def get_training_dynamics(api, project_name, entity_name, run_id, run_name):
-    run = api.run(f"{entity_name}/{project_name}/{run_id}")
-    json_file_name = f'training_dynamics/{run_name}_training_dynamics.json'
-    file_object = run.file(json_file_name).download(replace=True)
-    training_dynamics = json.load(file_object)
-    
-    zipped_values = zip(*[(values['gold_label_probs'], values['confidence'], values['variability'], values['correctness'], values['forgetfulness'])
-                      for values in training_dynamics.values()])
-
-    return zipped_values
-
-def get_training_dynamics_from_run_name(project_name, entity_name, run_name):
-    run_df = get_runs_dataframe(project_name, entity_name)
-    run_id = get_run_id_from_run_name(run_name, run_df)
-    api = wandb.Api()
-    training_dynamics = get_training_dynamics(api, project_name, entity_name, run_id, run_name)
-    
-    return training_dynamics
-
-def get_val_split_seed_from_run_name(teacher_run_name, project_name, entity_name):
-    run_df = get_runs_dataframe(project_name, entity_name)
-    matching_run = run_df.loc[run_df['name'] == teacher_run_name]
-
-    # no match found on teacher_run_name
-    if matching_run.empty:
-        raise ValueError(f"No run found with name {teacher_run_name}")
-
-    val_split_seed = matching_run['val_split_seed'].iloc[0]
-
-    # make sure that the val_split_seed is definitely an INTEGER, albeit in float format
-    if not (isinstance(val_split_seed, int) or isinstance(val_split_seed, float) and val_split_seed.is_integer): 
-        raise ValueError(f"Value of val_split_seed '{val_split_seed}' is not a valid integer")
-
-    return int(val_split_seed)

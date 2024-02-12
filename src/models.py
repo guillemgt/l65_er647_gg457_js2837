@@ -12,6 +12,9 @@ import wandb
 import scipy
 import pandas as pd
 
+from graphmamba_utils import *
+
+
 def get_labels_lists(outputs):
 	all_y_true, all_y_pred = [], []
 	for output in outputs:
@@ -261,6 +264,76 @@ class TrainingLightningModule(pl.LightningModule):
 
 
 
+class GraphModel(TrainingLightningModule):
+    def __init__(self, args):
+        super().__init__()
+        
+        channels = args.graph_model_channels
+        pe_dim = args.graph_model_pe_dim
+        num_layers = args.graph_model_num_layers
+        model_type = args.graph_model_model_type
+        shuffle_ind = args.graph_model_shuffle_ind
+        d_state = args.graph_model_d_state
+        d_conv = args.graph_model_d_conv
+        order_by_degree = args.graph_model_order_by_degree
+
+        self.node_emb = Embedding(28, channels - pe_dim)
+        self.pe_lin = Linear(20, pe_dim)
+        self.pe_norm = BatchNorm1d(20)
+        self.edge_emb = Embedding(4, channels)
+        self.model_type = model_type
+        self.shuffle_ind = shuffle_ind
+        self.order_by_degree = order_by_degree
+        
+        self.convs = ModuleList()
+        for _ in range(num_layers):
+            nn = Sequential(
+                Linear(channels, channels),
+                ReLU(),
+                Linear(channels, channels),
+            )
+            if self.model_type == 'gine':
+                conv = GINEConv(nn)
+                
+            if self.model_type == 'mamba':
+                conv = GPSConv(channels, GINEConv(nn), heads=4, attn_dropout=0.5,
+                               att_type='mamba',
+                               shuffle_ind=self.shuffle_ind,
+                               order_by_degree=self.order_by_degree,
+                               d_state=d_state, d_conv=d_conv)
+                
+            if self.model_type == 'transformer':
+                conv = GPSConv(channels, GINEConv(nn), heads=4, attn_dropout=0.5, att_type='transformer')
+                
+            # conv = GINEConv(nn)
+            self.convs.append(conv)
+
+        self.mlp = Sequential(
+            Linear(channels, channels // 2),
+            ReLU(),
+            Linear(channels // 2, channels // 4),
+            ReLU(),
+            Linear(channels // 4, 1),
+        )
+
+    def forward(self, x, pe, edge_index, edge_attr, batch):
+        x_pe = self.pe_norm(pe)
+        x = torch.cat((self.node_emb(x.squeeze(-1)), self.pe_lin(x_pe)), 1)
+        edge_attr = self.edge_emb(edge_attr)
+
+        for conv in self.convs:
+            if self.model_type == 'gine':
+                x = conv(x, edge_index, edge_attr=edge_attr)
+            else:
+                x = conv(x, edge_index, batch, edge_attr=edge_attr)
+                
+        x = global_add_pool(x, batch)
+        return self.mlp(x)
+    
+
 def get_model(args):
-    logger.info(f'Fetching model. args.model {args.model} | args.model_size: {args.model_size}')
-    # TODO
+    logger.info(f'Fetching model. args.model {args.model}')
+    
+    model = GraphModel(args)
+    
+    return model
