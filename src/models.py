@@ -59,6 +59,7 @@ def reshape_batch(batch):
 	
 	This function reshapes the input from (batch_size, no_samples, D) to (batch_size * no_samples, D)
 	"""
+	x, edge_index, edge_attr, y, pe, batch, ptr = batch
 	x, y = batch
 	x = x.reshape(-1, x.shape[-1])
 	y = y.reshape(-1)
@@ -78,7 +79,7 @@ class TrainingLightningModule(pl.LightningModule):
 		self.validation_step_outputs = []
 		self.test_step_outputs = []
 		self.args = args
-		self.learning_rate = args.lr
+		self.learning_rate = args.learning_rate
 
 	def compute_loss(self, y_true, y_hat):
 		losses = {}
@@ -235,7 +236,7 @@ class TrainingLightningModule(pl.LightningModule):
 			elif self.args.lr_scheduler == 'linear':
 				lr_scheduler = torch.optim.lr_scheduler.LinearLR(
 					optimizer, 
-					start_factor = self.args.lr,
+					start_factor = self.args.learning_rate,
 					end_factor = 3e-5,
 					total_iters = self.args.max_steps / self.args.val_check_interval)
 			elif self.args.lr_scheduler == 'lambda':
@@ -266,12 +267,12 @@ class TrainingLightningModule(pl.LightningModule):
 
 class GraphModel(TrainingLightningModule):
     def __init__(self, args):
-        super().__init__()
+        super().__init__(args)
         
         channels = args.graph_model_channels
         pe_dim = args.graph_model_pe_dim
         num_layers = args.graph_model_num_layers
-        model_type = args.graph_model_model_type
+        model_type = args.graph_model_type
         shuffle_ind = args.graph_model_shuffle_ind
         d_state = args.graph_model_d_state
         d_conv = args.graph_model_d_conv
@@ -332,7 +333,7 @@ class GraphModel(TrainingLightningModule):
     
 
 def get_model(args):
-    logger.info(f'Fetching model. args.model {args.model}')
+    logger.info(f'Fetching model. args.graph_model_type {args.graph_model_type}')
     
     model = GraphModel(args)
     

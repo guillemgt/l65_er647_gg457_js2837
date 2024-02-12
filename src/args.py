@@ -4,7 +4,7 @@ parser = argparse.ArgumentParser(description='State Space Graph Neural networks'
 
 
 # Dataset
-parser.add_argument('--dataset', type=str, default='CSL', choices=['CSL', 'ZINC'])
+parser.add_argument('--dataset', type=str, default='ZINC', choices=['CSL', 'ZINC'])
 
 # Graph Model 
 parser.add_argument('--graph_model_type', type=str, default='mamba', choices=['mamba'])
@@ -20,11 +20,18 @@ parser.add_argument('--graph_model_order_by_degree', action='store_true')
 parser.add_argument('--epochs', type=int, default=50, help='Maximum number of epochs for training.')
 parser.add_argument('--max_steps', type=int, default=1000000, help='Maximum number of training steps (batches) for training.')
 parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for the optimizer.')
-parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'AdamW', 'SGD'], help='Optimizer for training.')
+parser.add_argument('--optimizer', type=str, choices=['adam', 'adamw'], default='adamw')
 parser.add_argument('--train_batch_size', type=int, default=128, help='Batch size for training.')
 parser.add_argument('--validation_batch_size', type=int, default=128, help='Batch size for validation.')
 parser.add_argument('--checkpoint_dir', type=str, default='./model_checkpoints/', help='Directory to save model checkpoints.')
 parser.add_argument('--force_full_epoch_training', action='store_true', help='If True, then training will continue for the specified amount of epochs regardless.')
+parser.add_argument('--lr_scheduler', type=str, choices=['plateau', 'cosine_warm_restart', 'linear', 'lambda'], default=None)
+parser.add_argument('--weight_decay', type=float, default=1e-4)
+parser.add_argument('--class_weight', type=str, choices=['standard', 'balanced'], default='balanced', 
+                    help="If `standard`, all classes use a weight of 1.\
+                    If `balanced`, classes are weighted inverse proportionally to their size (see https://scikit-learn.org/stable/modules/generated/sklearn.utils.class_weight.compute_class_weight.html)")
+parser.add_argument('--gradient_clip_val', type=float, default=0.5, help='Gradient clipping value to prevent exploding gradients.')
+parser.add_argument('--deterministic', action='store_true', dest='deterministic')
 
 # General Configuration
 parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
