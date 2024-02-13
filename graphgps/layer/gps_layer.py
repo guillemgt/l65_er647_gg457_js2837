@@ -111,6 +111,49 @@ def permute_within_batch(batch):
 
     return permuted_indices
 
+# Heuristics
+def _heuristic_degree(batch):
+    h = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
+    return [h]
+def _heuristic_degree_bidirectional(batch):
+    h = _heuristic_degree(batch)[0]
+    return [h, -h]
+def _heuristic_eigencentrality(batch):
+    return [batch.EigCentrality]
+def _heuristic_eigencentrality_bidirectional(batch):
+    h = _heuristic_eigencentrality(batch)[0]
+    return [h, -h]
+def _heuristic_RWSE(batch):
+    return [-torch.sum(batch.pestat_RWSE, dim=1)]
+def _heuristic_RWSE_bidirectional(batch):
+    h = _heuristic_RWSE(batch)[0]
+    return [h, -h]
+def _heuristic_global_pe_1(batch):
+    return [batch.EigVecs[:, 0]]
+def _heuristic_global_pe_2(batch):
+    return [batch.EigVecs[:, 0], batch.EigVecs[:, 1]]
+def _heuristic_global_pe_1_bidirectional(batch):
+    h = _heuristic_global_pe_1(batch)[0]
+    return [h, -h]
+def _heuristic_global_pe_2(batch):
+    return [batch.EigVecs[:, 0], batch.EigVecs[:, 1]]
+def _heuristic_global_pe_2_bidirectional(batch):
+    hs = _heuristic_global_pe_2(batch)
+    return hs + [-h for h in hs]
+
+heuristic_fns = {
+    'degree': (_heuristic_degree, 1),
+    'degree_bidirectional': (_heuristic_degree_bidirectional, 2),
+    'eigencentrality': (_heuristic_eigencentrality, 1),
+    'eigencentrality_bidirectional': (_heuristic_eigencentrality_bidirectional, 2),
+    'RWSE': (_heuristic_RWSE, 1),
+    'RWSE_bidirectional': (_heuristic_RWSE_bidirectional, 2),
+    'global_pe_1': (_heuristic_global_pe_1, 1),
+    'global_pe_2': (_heuristic_global_pe_2, 2),
+    'global_pe_1_bidirectional': (_heuristic_global_pe_1_bidirectional, 2),
+    'global_pe_2_bidirectional': (_heuristic_global_pe_2_bidirectional, 4),
+}
+
 class GPSLayer(nn.Module):
     """Local MPNN + full graph attention x-former layer.
     """
@@ -119,7 +162,7 @@ class GPSLayer(nn.Module):
                  local_gnn_type, global_model_type, num_heads,
                  pna_degrees=None, equivstable_pe=False, dropout=0.0,
                  attn_dropout=0.0, layer_norm=False, batch_norm=True,
-                 bigbird_cfg=None):
+                 bigbird_cfg=None, mamba_permute_iterations=0, mamba_use_noise=False, mamba_buckets_num=0, mamba_heuristics=['degree']):
         super().__init__()
 
         self.dim_h = dim_h
@@ -129,6 +172,10 @@ class GPSLayer(nn.Module):
         self.batch_norm = batch_norm
         self.equivstable_pe = equivstable_pe
         self.NUM_BUCKETS = 3
+        self.mamba_permute_iterations = mamba_permute_iterations
+        self.mamba_use_noise = mamba_use_noise
+        self.mamba_buckets_num = mamba_buckets_num
+        self.mamba_heuristics = mamba_heuristics
 
         # Local message-passing model.
         if local_gnn_type == 'None':
@@ -192,6 +239,15 @@ class GPSLayer(nn.Module):
             bigbird_cfg.n_heads = num_heads
             bigbird_cfg.dropout = dropout
             self.self_attn = SingleBigBirdLayer(bigbird_cfg)
+        elif global_model_type == 'Mamba_new':
+            num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
+            self.self_attn = torch.nn.ModuleList()
+            for i in range(num_models):
+                self.self_attn.append(Mamba(d_model=dim_h, # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,    # Local convolution width
+                    expand=1,    # Block expansion factor
+                ))
         elif 'Mamba' in global_model_type:
             if global_model_type.split('_')[-1] == '2':
                 self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
@@ -329,28 +385,15 @@ class GPSLayer(nn.Module):
                 #   degree, eigen, RWSE:
                 #       different heuristics that are used
 
-                # TODO(guillem): these should be arguments of the model
-                permute_iterations = 1
-                use_noise = False
-                buckets_num = 1
-                
-                # TODO(guillem): move this somewhere else
-                def heuristic_degree(batch):
-                    h = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
-                    return [h]
-                def heuristic_degree_bidirectional(batch):
-                    h = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
-                    return [h, -h]
-                def heuristic_eigencentrality(batch):
-                    return [batch.EigCentrality]
-                def heuristic_RWSE(batch):
-                    return [-torch.sum(batch.pestat_RWSE, dim=1)]
+                permute_iterations = self.mamba_permute_iterations
+                use_noise = self.mamba_use_noise
+                buckets_num = self.mamba_buckets_num
 
-                heuristics = [heuristic_degree]
+                heuristics = self.mamba_heuristics
+                heuristic_values = sum((heuristic_fns[h][0](batch) for h in heuristics), [])
                 mamba_arr = []
-                heuristic_values = sum((h(batch) for h in heuristics), [])
-                for i in range(min(permute_iterations, 1)):
-                    for heuristic_ in heuristic_values:
+                for _ in range(min(permute_iterations, 1)):
+                    for j, heuristic_ in enumerate(heuristic_values):
                         if use_noise:
                             heuristic_noise = torch.rand_like(heuristic_).to(heuristic_.device)
                             heuristic = heuristic_ + heuristic_noise
@@ -365,7 +408,7 @@ class GPSLayer(nn.Module):
                                 h_ind_perm_sort = lexsort([heuristic[ind_i], batch.batch[ind_i]])
                                 h_ind_perm_i = ind_i[h_ind_perm_sort]
                                 h_dense, mask = to_dense_batch(h[h_ind_perm_i], batch.batch[h_ind_perm_i])
-                                h_dense = self.self_attn(h_dense)[mask]
+                                h_dense = self.self_attn[j](h_dense)[mask]
                                 indices_arr.append(h_ind_perm_i)
                                 emb_arr.append(h_dense)
                             h_ind_perm_reverse = torch.argsort(torch.cat(indices_arr))
@@ -377,13 +420,13 @@ class GPSLayer(nn.Module):
                             h_ind_perm = h_ind_perm[h_ind_perm_1]
                             h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
                             h_ind_perm_reverse = torch.argsort(h_ind_perm)
-                            h_attn = self.self_attn(h_dense)[mask][h_ind_perm_reverse]
+                            h_attn = self.self_attn[j](h_dense)[mask][h_ind_perm_reverse]
 
                         else:
                             h_ind_perm = lexsort([heuristic, batch.batch])
                             h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
                             h_ind_perm_reverse = torch.argsort(h_ind_perm)
-                            h_attn = self.self_attn(h_dense)[mask][h_ind_perm_reverse]
+                            h_attn = self.self_attn[j](h_dense)[mask][h_ind_perm_reverse]
 
                         mamba_arr.append(h_attn)
 
