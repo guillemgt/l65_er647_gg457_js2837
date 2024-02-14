@@ -65,3 +65,8 @@ If you want to quickly test if mamba is installed correctly:
 ```
 python mamba-test.py
 ```
+Then delete `causal_conv1d/` and `mamba/`:
+```
+rm -rf causal_conv1d/
+rm -rf mamba/
+```
