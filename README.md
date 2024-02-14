@@ -6,7 +6,7 @@
 conda create --name L65 python=3.10.12
 conda activate L65
 ```
-Install torch: https://pytorch.org/get-started/locally/
+Install torch: https://pytorch.org/get-started/locally/, e.g. `pip3 install torch torchvision torchaudio`.
 Needs to be done before requirements.txt install.
 
 ```
@@ -40,7 +40,7 @@ and also
 ```
 git clone https://github.com/state-spaces/mamba.git
 ```
-Edit `causal-conv1d/setup.py` by changing
+Edit `mamba/causal-conv1d/setup.py` by changing
 ```
     cc_flag.append("-gencode")
     cc_flag.append("arch=compute_70,code=sm_70")
