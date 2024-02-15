@@ -70,3 +70,8 @@ Then delete `causal_conv1d/` and `mamba/`:
 rm -rf causal_conv1d/
 rm -rf mamba/
 ```
+
+Finally, add the following packages:
+```
+pip install rdkit deepspeed local_attention axial_positional_embedding performer_pytorch ogb torch_scatter yacs
+```
