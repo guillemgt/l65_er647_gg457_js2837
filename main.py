@@ -116,6 +116,8 @@ if __name__ == '__main__':
     # Load config file
     set_cfg(cfg)
     cfg.set_new_allowed(True)
+    for k in args.opts[0::2]:
+        cfg[k] = None
     load_cfg(cfg, args)
     custom_set_out_dir(cfg, args.cfg_file, cfg.name_tag)
     dump_cfg(cfg)

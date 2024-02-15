@@ -59,6 +59,8 @@ def compute_posenc_stats(data, pe_types, is_undirected, cfg):
                            num_nodes=N)
         )
         evals, evects = np.linalg.eigh(L.toarray())
+        # evals = np.ones(N, dtype=np.float32)
+        # evects = np.zeros((N, N), dtype=np.float32)
         #max_eig_index = np.argmax(evals)
         #max_eigenvector = evects[:, max_eig_index]
         #centrality = max_eigenvector / np.linalg.norm(max_eigenvector)

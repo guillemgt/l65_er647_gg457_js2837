@@ -303,7 +303,7 @@ class MetricWrapper:
                                  'Returning zero tensor in true positive score':
                         pass
                     else:
-                        print(e)
+                        raise e
             warnings.filterwarnings("default")
 
             # Average the metric
