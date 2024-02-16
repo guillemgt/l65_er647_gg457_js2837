@@ -7,6 +7,8 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+mamba/
+causal-conv1d/
 .Python
 build/
 develop-eggs/
