@@ -397,10 +397,8 @@ class GPSLayer(nn.Module):
                 for _ in range(max(permute_iterations, 1)):
                     for j, heuristic_ in enumerate(heuristic_values):
                         if use_noise:
-                            heuristic_noise = 0.01*torch.randn_like(heuristic_).to(heuristic_.device)
+                            heuristic_noise = 0.05*torch.randn_like(heuristic_).to(heuristic_.device)
                             heuristic = heuristic_ + heuristic_noise
-                            print(heuristic_noise.sum())
-                            print(heuristic_.max(), heuristic_.min(), heuristic.max(), heuristic.min())
                         else:
                             heuristic = heuristic_
                         

@@ -44,7 +44,7 @@ gt:
   attn_dropout: 0.5
   layer_norm: False
   batch_norm: True
-  mamba_heuristics: 'global_pe_2_bidirectional'
+  mamba_heuristics: 'global_pe_1_bidirectional'
   mamba_permute_iterations: 5
   mamba_use_noise: True
 gnn:
