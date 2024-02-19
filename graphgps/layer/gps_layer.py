@@ -239,7 +239,7 @@ class GPSLayer(nn.Module):
             bigbird_cfg.n_heads = num_heads
             bigbird_cfg.dropout = dropout
             self.self_attn = SingleBigBirdLayer(bigbird_cfg)
-        elif global_model_type == 'Mamba_new':
+        elif 'MambaL65' in global_model_type:
             num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
             self.self_attn = torch.nn.ModuleList()
             for i in range(num_models):
@@ -367,7 +367,7 @@ class GPSLayer(nn.Module):
             elif self.global_model_type == 'BigBird':
                 h_attn = self.self_attn(h_dense, attention_mask=mask)
             
-            elif self.global_model_type == 'Mamba_new':
+            elif self.global_model_type == 'MambaL65':
                 # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
                 # (and also our new code)
 
@@ -386,17 +386,21 @@ class GPSLayer(nn.Module):
                 #       different heuristics that are used
 
                 permute_iterations = self.mamba_permute_iterations
+                if batch.split == 'train':
+                    permute_iterations = 1
                 use_noise = self.mamba_use_noise
                 buckets_num = self.mamba_buckets_num
 
                 heuristics = self.mamba_heuristics
                 heuristic_values = sum((heuristic_fns[h][0](batch) for h in heuristics), [])
                 mamba_arr = []
-                for _ in range(min(permute_iterations, 1)):
+                for _ in range(max(permute_iterations, 1)):
                     for j, heuristic_ in enumerate(heuristic_values):
                         if use_noise:
-                            heuristic_noise = torch.rand_like(heuristic_).to(heuristic_.device)
+                            heuristic_noise = 0.01*torch.randn_like(heuristic_).to(heuristic_.device)
                             heuristic = heuristic_ + heuristic_noise
+                            print(heuristic_noise.sum())
+                            print(heuristic_.max(), heuristic_.min(), heuristic.max(), heuristic.min())
                         else:
                             heuristic = heuristic_
                         

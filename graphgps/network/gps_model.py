@@ -79,6 +79,25 @@ class GPSModel(torch.nn.Module):
             local_gnn_type, global_model_type = cfg.gt.layer_type.split('+')
         except:
             raise ValueError(f"Unexpected layer type: {cfg.gt.layer_type}")
+        
+        mamba_parameters = {}
+        try:
+            mamba_parameters['mamba_heuristics'] = cfg.gt.mamba_heuristics.split(',')
+        except:
+            pass
+        try:
+            mamba_parameters['mamba_permute_iterations'] = cfg.gt.mamba_permute_iterations
+        except:
+            pass
+        try:
+            mamba_parameters['mamba_use_noise'] = cfg.gt.mamba_use_noise
+        except:
+            pass
+        try:
+            mamba_parameters['mamba_buckets_num'] = cfg.gt.mamba_buckets_num
+        except:
+            pass
+
         layers = []
         for _ in range(cfg.gt.layers):
             layers.append(GPSLayer(
@@ -93,6 +112,7 @@ class GPSModel(torch.nn.Module):
                 layer_norm=cfg.gt.layer_norm,
                 batch_norm=cfg.gt.batch_norm,
                 bigbird_cfg=cfg.gt.bigbird,
+                **mamba_parameters
             ))
         self.layers = torch.nn.Sequential(*layers)
 
