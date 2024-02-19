@@ -1,0 +1,31 @@
+program: /home/er647/projects/l65_er647_gg457_js2837/main.py # Path to the program to run
+entity: L65
+project: test # Project name
+
+name: test_default_template
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  # - --sweep_id
+  # - test0
+  - --cfg
+  - configs/L65/default_cfg.yaml
+  - device 
+  - cuda
+
+
+method: grid
+parameters:
+  dataset.name:
+    values:
+      - CIFAR10
+      - MNIST
+
+  seed:  # Number of folds
+    distribution: categorical
+    values:
+      - 0
+      - 1
+      - 2

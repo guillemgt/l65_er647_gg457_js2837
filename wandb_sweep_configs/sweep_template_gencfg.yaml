@@ -1,0 +1,26 @@
+program: /home/er647/projects/l65_er647_gg457_js2837/run_experiment.sh # Path to the program to run
+entity: L65
+project: test # Project name
+
+name: test_default_template
+
+command:
+  - ${env}
+  - bash
+  - ${program}
+  - ${args}
+  - --sweep_id
+  - test0
+
+method: grid
+parameters:
+  dataset.name:
+    values:
+      - CIFAR10
+
+  seed:  # Number of folds
+    distribution: categorical
+    values:
+      - 0
+      - 1
+      - 2
