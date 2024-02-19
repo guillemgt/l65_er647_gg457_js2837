@@ -234,13 +234,57 @@ def load_dataset_master(format, name, dataset_dir):
         # Estimate directedness based on 10 graphs to save time.
         is_undirected = all(d.is_undirected() for d in dataset[:10])
         logging.info(f"  ...estimated to be undirected: {is_undirected}")
-        pre_transform_in_memory(dataset,
-                                partial(compute_posenc_stats,
-                                        pe_types=pe_enabled_list,
-                                        is_undirected=is_undirected,
-                                        cfg=cfg),
+
+        loaded_all_pe_stats = True
+        for pe_name in pe_enabled_list:
+            # Check if we have saved PE statistics for this dataset.
+            pe_stats_file = osp.join(dataset_dir, f'posenc_stats_{pe_name}.pt')
+            if pe_name == 'LapPE' and osp.exists(pe_stats_file):
+                logging.info(f"  ...loading precomputed PE stats for {pe_name}")
+                pe_stats = torch.load(pe_stats_file)
+            else:
+                loaded_all_pe_stats = False
+                break
+        
+        if not loaded_all_pe_stats:
+            pre_transform_in_memory(dataset,
+                                    partial(compute_posenc_stats,
+                                            pe_types=pe_enabled_list,
+                                            is_undirected=is_undirected,
+                                            cfg=cfg),
+                                    show_progress=True
+                                    )
+            for pe_name in pe_enabled_list:
+                pe_stats_file = osp.join(dataset_dir, f'posenc_stats_{pe_name}.pt')
+                if pe_name == 'LapPE':
+                    # Save dataset.EigVals, dataset.EigVecs to pe_stats_file
+                    EigVals = [dataset.get(i).EigVals for i in range(len(dataset))]
+                    EigVecs = [dataset.get(i).EigVecs for i in range(len(dataset))]
+                    torch.save({'EigVals': EigVals,
+                                'EigVecs': EigVecs},
+                               pe_stats_file)
+                    logging.info(f"  ...saving precomputed PE stats for {pe_name}")
+        else:
+            class PosEncLoader:
+                def __init__(self, pe_types, is_undirected, cfg):
+                    self.i = 0
+                    self.pe_types = pe_types
+                    self.is_undirected = is_undirected
+                    self.cfg = cfg
+
+                def load_posenc_stats(self, data):
+                    data.EigVals = pe_stats['EigVals'][self.i]
+                    data.EigVecs = pe_stats['EigVecs'][self.i]
+                    self.i += 1
+                    return data
+                
+            pe_loader = PosEncLoader(pe_enabled_list, is_undirected, cfg)
+                
+            pre_transform_in_memory(dataset,
+                                pe_loader.load_posenc_stats,
                                 show_progress=True
                                 )
+        
         elapsed = time.perf_counter() - start
         timestr = time.strftime('%H:%M:%S', time.gmtime(elapsed)) \
                   + f'{elapsed:.2f}'[-3:]
