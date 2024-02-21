@@ -129,16 +129,19 @@ def _heuristic_RWSE_bidirectional(batch):
     h = _heuristic_RWSE(batch)[0]
     return [h, -h]
 def _heuristic_global_pe_1(batch):
-    return [batch.EigVecs[:, 0]]
-def _heuristic_global_pe_2(batch):
-    return [batch.EigVecs[:, 0], batch.EigVecs[:, 1]]
+    return [batch.EigVecs[:, 1]]
 def _heuristic_global_pe_1_bidirectional(batch):
     h = _heuristic_global_pe_1(batch)[0]
     return [h, -h]
 def _heuristic_global_pe_2(batch):
-    return [batch.EigVecs[:, 0], batch.EigVecs[:, 1]]
+    return [batch.EigVecs[:, 1], batch.EigVecs[:, 2]]
 def _heuristic_global_pe_2_bidirectional(batch):
     hs = _heuristic_global_pe_2(batch)
+    return hs + [-h for h in hs]
+def _heuristic_global_pe_m1(batch):
+    return [batch.EigVecs[:, -1]]
+def _heuristic_global_pe_m1_bidirectional(batch):
+    hs = _heuristic_global_pe_m1(batch)
     return hs + [-h for h in hs]
 
 heuristic_fns = {
@@ -150,9 +153,32 @@ heuristic_fns = {
     'RWSE_bidirectional': (_heuristic_RWSE_bidirectional, 2),
     'global_pe_1': (_heuristic_global_pe_1, 1),
     'global_pe_2': (_heuristic_global_pe_2, 2),
+    'global_pe_m1': (_heuristic_global_pe_m1, 1),
     'global_pe_1_bidirectional': (_heuristic_global_pe_1_bidirectional, 2),
     'global_pe_2_bidirectional': (_heuristic_global_pe_2_bidirectional, 4),
+    'global_pe_m1_bidirectional': (_heuristic_global_pe_m1_bidirectional, 2),
 }
+
+class MeanModel(nn.Module):
+    def __init__(self, d_model, expand):
+        super().__init__()
+        self.d_model = d_model
+        self.mlp = nn.Sequential(
+            nn.BatchNorm1d(d_model),
+            nn.Linear(d_model, expand*d_model),
+            nn.ReLU(),
+            nn.Linear(expand*d_model, d_model)
+        )
+
+    def forward(self, x, mask):
+        mask = mask.unsqueeze(-1)
+        x_shape = x.shape
+        x = x.reshape(-1, x_shape[-1])
+        x = self.mlp(x)
+        x = x.reshape(x_shape)
+        x = ((x.sum(dim=-2, keepdim=True) / mask.sum(dim=-2, keepdim=True))*mask)
+        x = x.expand(x.shape)
+        return x
 
 class GPSLayer(nn.Module):
     """Local MPNN + full graph attention x-former layer.
@@ -162,7 +188,7 @@ class GPSLayer(nn.Module):
                  local_gnn_type, global_model_type, num_heads,
                  pna_degrees=None, equivstable_pe=False, dropout=0.0,
                  attn_dropout=0.0, layer_norm=False, batch_norm=True,
-                 bigbird_cfg=None, mamba_permute_iterations=0, mamba_use_noise=False, mamba_buckets_num=0, mamba_heuristics=['degree']):
+                 bigbird_cfg=None, mamba_permute_iterations=0, mamba_noise=0.0, mamba_buckets_num=0, mamba_heuristics=['degree']):
         super().__init__()
 
         self.dim_h = dim_h
@@ -173,7 +199,7 @@ class GPSLayer(nn.Module):
         self.equivstable_pe = equivstable_pe
         self.NUM_BUCKETS = 3
         self.mamba_permute_iterations = mamba_permute_iterations
-        self.mamba_use_noise = mamba_use_noise
+        self.mamba_noise = mamba_noise
         self.mamba_buckets_num = mamba_buckets_num
         self.mamba_heuristics = mamba_heuristics
 
@@ -239,6 +265,10 @@ class GPSLayer(nn.Module):
             bigbird_cfg.n_heads = num_heads
             bigbird_cfg.dropout = dropout
             self.self_attn = SingleBigBirdLayer(bigbird_cfg)
+        elif 'MeanL65' in global_model_type:
+            self.self_attn = MeanModel(d_model=dim_h, # Model dimension d_model
+                        expand=2,    # Block expansion factor
+                    )
         elif 'MambaL65' in global_model_type:
             num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
             self.self_attn = torch.nn.ModuleList()
@@ -358,7 +388,7 @@ class GPSLayer(nn.Module):
 
         # Multi-head attention.
         if self.self_attn is not None:
-            if self.global_model_type in ['Transformer', 'Performer', 'BigBird', 'Mamba']:
+            if self.global_model_type in ['Transformer', 'Performer', 'BigBird', 'Mamba', 'MeanL65']:
                 h_dense, mask = to_dense_batch(h, batch.batch)
             if self.global_model_type == 'Transformer':
                 h_attn = self._sa_block(h_dense, None, ~mask)[mask]
@@ -388,16 +418,17 @@ class GPSLayer(nn.Module):
                 permute_iterations = self.mamba_permute_iterations
                 if batch.split == 'train':
                     permute_iterations = 1
-                use_noise = self.mamba_use_noise
+                noise = self.mamba_noise
                 buckets_num = self.mamba_buckets_num
 
                 heuristics = self.mamba_heuristics
                 heuristic_values = sum((heuristic_fns[h][0](batch) for h in heuristics), [])
+                heuristic_noise_maginitudes = [noise*torch.std(h) for h in heuristic_values]
                 mamba_arr = []
                 for _ in range(max(permute_iterations, 1)):
                     for j, heuristic_ in enumerate(heuristic_values):
-                        if use_noise:
-                            heuristic_noise = 0.05*torch.randn_like(heuristic_).to(heuristic_.device)
+                        if noise > 0.0:
+                            heuristic_noise = heuristic_noise_maginitudes[j]*torch.randn_like(heuristic_).to(heuristic_.device)
                             heuristic = heuristic_ + heuristic_noise
                         else:
                             heuristic = heuristic_
@@ -433,6 +464,9 @@ class GPSLayer(nn.Module):
                         mamba_arr.append(h_attn)
 
                 h_attn = sum(mamba_arr) / len(mamba_arr)
+            
+            elif self.global_model_type == 'MeanL65':
+                h_attn = self.self_attn(h_dense, mask)[mask]    
             
             elif self.global_model_type == 'Mamba':
                 h_attn = self.self_attn(h_dense)[mask]                

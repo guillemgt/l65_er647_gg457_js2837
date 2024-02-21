@@ -90,7 +90,7 @@ class GPSModel(torch.nn.Module):
         except:
             pass
         try:
-            mamba_parameters['mamba_use_noise'] = cfg.gt.mamba_use_noise
+            mamba_parameters['mamba_noise'] = cfg.gt.mamba_noise
         except:
             pass
         try:
