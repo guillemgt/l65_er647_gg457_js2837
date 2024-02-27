@@ -172,12 +172,41 @@ class MeanModel(nn.Module):
 
     def forward(self, x, mask):
         mask = mask.unsqueeze(-1)
+
         x_shape = x.shape
         x = x.reshape(-1, x_shape[-1])
         x = self.mlp(x)
         x = x.reshape(x_shape)
+
         x = ((x.sum(dim=-2, keepdim=True) / mask.sum(dim=-2, keepdim=True))*mask)
         x = x.expand(x.shape)
+        return x
+    
+class ConvModel(nn.Module):
+    def __init__(self, d_model, expand, kernel_size=11):
+        super().__init__()
+        self.d_model = d_model
+        self.mlp = nn.Sequential(
+            nn.BatchNorm1d(d_model),
+            nn.Linear(d_model, expand*d_model),
+            nn.ReLU(),
+            nn.Linear(expand*d_model, d_model)
+        )
+        self.conv = nn.Conv1d(d_model, d_model, kernel_size=kernel_size, padding='same', groups=d_model)
+
+    def forward(self, x, mask):
+        mask = mask.unsqueeze(-1)
+
+        x_shape = x.shape
+        x = x.reshape(-1, x_shape[-1])
+        x = self.mlp(x)
+        x = x.reshape(x_shape)
+        x = mask*x
+
+        x = x.permute(0, 2, 1)
+        x = self.conv(x)
+        x = x.permute(0, 2, 1)
+
         return x
 
 class GPSLayer(nn.Module):
@@ -265,9 +294,15 @@ class GPSLayer(nn.Module):
             bigbird_cfg.n_heads = num_heads
             bigbird_cfg.dropout = dropout
             self.self_attn = SingleBigBirdLayer(bigbird_cfg)
-        elif 'MeanL65' in global_model_type:
+        elif 'MeanL65' == global_model_type:
             self.self_attn = MeanModel(d_model=dim_h, # Model dimension d_model
                         expand=2,    # Block expansion factor
+                    )
+        elif 'ConvL65' in global_model_type:
+            kernel_size = int(global_model_type.split('_')[-1])
+            self.self_attn = ConvModel(d_model=dim_h, # Model dimension d_model
+                        expand=2,    # Block expansion factor
+                        kernel_size=kernel_size
                     )
         elif 'MambaL65' in global_model_type:
             num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
@@ -388,7 +423,7 @@ class GPSLayer(nn.Module):
 
         # Multi-head attention.
         if self.self_attn is not None:
-            if self.global_model_type in ['Transformer', 'Performer', 'BigBird', 'Mamba', 'MeanL65']:
+            if self.global_model_type in ['Transformer', 'Performer', 'BigBird', 'Mamba', 'MeanL65', 'ConvL65']:
                 h_dense, mask = to_dense_batch(h, batch.batch)
             if self.global_model_type == 'Transformer':
                 h_attn = self._sa_block(h_dense, None, ~mask)[mask]
@@ -466,7 +501,23 @@ class GPSLayer(nn.Module):
                 h_attn = sum(mamba_arr) / len(mamba_arr)
             
             elif self.global_model_type == 'MeanL65':
-                h_attn = self.self_attn(h_dense, mask)[mask]    
+                h_attn = self.self_attn(h_dense, mask)[mask]  
+            elif 'ConvL65' in self.global_model_type:
+
+                permute_iterations = self.mamba_permute_iterations
+                if batch.split == 'train':
+                    permute_iterations = 1
+
+                mamba_arr = []
+                for _ in range(max(permute_iterations, 1)):
+                    h_ind_perm = permute_within_batch(batch.batch)
+                    h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
+                    h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                    h_attn = self.self_attn(h_dense, mask)[mask][h_ind_perm_reverse]
+
+                    mamba_arr.append(h_attn)
+
+                h_attn = sum(mamba_arr) / len(mamba_arr)  
             
             elif self.global_model_type == 'Mamba':
                 h_attn = self.self_attn(h_dense)[mask]                
