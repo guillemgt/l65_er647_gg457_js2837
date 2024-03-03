@@ -75,3 +75,29 @@ Finally, add the following packages:
 ```
 pip install rdkit deepspeed local_attention axial_positional_embedding performer_pytorch ogb torch_scatter yacs
 ```
+
+## Setting up to run on HPC:
+Run the following commands:
+
+module purge                               # Removes all modules still loaded
+
+module load rhel8/default-amp              # REQUIRED - loads the basic environment
+
+module unload miniconda/3
+
+module load cuda/11.8
+
+Run `nvcc -V` to verify that your cuda version is 11.8
+
+Follow instructions from previous section to create a conda environment and activate it. 
+
+Set the $CUDA_HOME environment variable to the 11.8 cuda environment:
+
+conda env config vars set CUDA_HOME=/path/to/cuda-11.8
+
+Note that the path to cuda11.8 can be found by running `module show cuda/11.8` and then copying what comes after CUDA_PATH. So the command would likely be:
+conda env config vars set CUDA_HOME=/usr/local/software/cuda/11.8
+
+Run conda activate L65 again.
+
+Now follow rest of the install instructions. But make sure to install correct torch for cuda=11.8. e.g.:`conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia`
