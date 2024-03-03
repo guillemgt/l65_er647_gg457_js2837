@@ -140,6 +140,7 @@ class COCOSuperpixels(InMemoryDataset):
     def process(self):
         label_map = self.label_remap()
         for split in ['train', 'val', 'test']:
+            print(f'Loading {split} dataset')
             with open(osp.join(self.raw_dir, f'{split}.pickle'), 'rb') as f:
                 graphs = pickle.load(f)
             

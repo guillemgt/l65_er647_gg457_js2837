@@ -304,6 +304,12 @@ class GPSLayer(nn.Module):
                         expand=2,    # Block expansion factor
                         kernel_size=kernel_size
                     )
+        elif 'SharedMambaL65' in global_model_type:
+            self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
+                d_state=16,  # SSM state expansion factor
+                d_conv=4,    # Local convolution width
+                expand=1,    # Block expansion factor
+            )
         elif 'MambaL65' in global_model_type:
             num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
             self.self_attn = torch.nn.ModuleList()
@@ -495,6 +501,74 @@ class GPSLayer(nn.Module):
                             h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
                             h_ind_perm_reverse = torch.argsort(h_ind_perm)
                             h_attn = self.self_attn[j](h_dense)[mask][h_ind_perm_reverse]
+
+                        mamba_arr.append(h_attn)
+
+                h_attn = sum(mamba_arr) / len(mamba_arr)
+            
+            elif self.global_model_type == 'SharedMambaL65':
+                # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
+                # (and also our new code)
+
+                # NOTE(guillem): naming conventions of graph-mamba's global_mode_type:
+                #   permute = hybrid with 5 replaced by 1 for averaging during inference:
+                #       basically they randomly permute the orders before applying any heuristic
+                #   multi (doesn't seem to be used):
+                #       different mamba layers running in parallel
+                #   noise:
+                #       adds noise to the heuristics
+                #   bucket:
+                #       colors each node randomly and runs mamba for the sequences of nodes in each color
+                #   cluster:
+                #       similar to bucket but instead of random colors, it permutes nodes within a cluster
+                #   degree, eigen, RWSE:
+                #       different heuristics that are used
+
+                permute_iterations = self.mamba_permute_iterations
+                if batch.split == 'train':
+                    permute_iterations = 1
+                noise = self.mamba_noise
+                buckets_num = self.mamba_buckets_num
+
+                heuristics = self.mamba_heuristics
+                heuristic_values = sum((heuristic_fns[h][0](batch) for h in heuristics), [])
+                heuristic_noise_maginitudes = [noise*torch.std(h) for h in heuristic_values]
+                mamba_arr = []
+                for _ in range(max(permute_iterations, 1)):
+                    for j, heuristic_ in enumerate(heuristic_values):
+                        if noise > 0.0:
+                            heuristic_noise = heuristic_noise_maginitudes[j]*torch.randn_like(heuristic_).to(heuristic_.device)
+                            heuristic = heuristic_ + heuristic_noise
+                        else:
+                            heuristic = heuristic_
+                        
+                        if buckets_num > 1:
+                            indices_arr, emb_arr = [], []
+                            bucket_assign = torch.randint_like(heuristic, 0, self.NUM_BUCKETS).to(heuristic.device)
+                            for i in range(buckets_num):
+                                ind_i = (bucket_assign==i).nonzero().squeeze()
+                                h_ind_perm_sort = lexsort([heuristic[ind_i], batch.batch[ind_i]])
+                                h_ind_perm_i = ind_i[h_ind_perm_sort]
+                                h_dense, mask = to_dense_batch(h[h_ind_perm_i], batch.batch[h_ind_perm_i])
+                                h_dense = self.self_attn(h_dense)[mask]
+                                indices_arr.append(h_ind_perm_i)
+                                emb_arr.append(h_dense)
+                            h_ind_perm_reverse = torch.argsort(torch.cat(indices_arr))
+                            h_attn = torch.cat(emb_arr)[h_ind_perm_reverse]
+
+                        elif permute_iterations > 1:
+                            h_ind_perm = permute_within_batch(batch.batch)
+                            h_ind_perm_1 = lexsort([heuristic[h_ind_perm], batch.batch[h_ind_perm]])
+                            h_ind_perm = h_ind_perm[h_ind_perm_1]
+                            h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
+                            h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                            h_attn = self.self_attn(h_dense)[mask][h_ind_perm_reverse]
+
+                        else:
+                            h_ind_perm = lexsort([heuristic, batch.batch])
+                            h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
+                            h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                            h_attn = self.self_attn(h_dense)[mask][h_ind_perm_reverse]
 
                         mamba_arr.append(h_attn)
 
