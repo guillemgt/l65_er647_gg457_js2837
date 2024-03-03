@@ -339,6 +339,20 @@ class GPSLayer(nn.Module):
                     d_conv=4,    # Local convolution width
                     expand=1,    # Block expansion factor
                 )
+        elif 'RandomWalk_Mamba_L65' in self.global_model_type:
+            # Initialize the Mamba model for self.self_attn
+            self.self_attn = Mamba(d_model=dim_h,  # Input dimension
+                                d_state=16,     # State dimension (adjust as needed)
+                                d_conv=4,       # Convolution dimension (adjust as needed)
+                                expand=1)       # Expansion factor (adjust as needed)
+
+            # Initialize the MLP with one hidden layer
+            expand_factor = 2  # Adjust the expansion factor as needed
+            self.mlp = nn.Sequential(
+                nn.Linear(dim_h, dim_h * expand_factor),  # Input to hidden layer
+                nn.ReLU(),                                # Activation function
+                nn.Linear(dim_h * expand_factor, dim_h)   # Hidden layer to output
+            )
         elif 'MambaL65' in global_model_type:
             num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
             self.self_attn = torch.nn.ModuleList()
@@ -467,7 +481,36 @@ class GPSLayer(nn.Module):
             elif self.global_model_type == 'BigBird':
                 h_attn = self.self_attn(h_dense, attention_mask=mask)
 
-
+            elif self.global_model_type == 'RandomWalk_Mamba_L65':
+                num_walks = ... # TODO (evan) Define the number of walks per node (num_walk)
+                walk_length = ... # TODO (evan) Define the length of each walk (walk_len)
+                walks_embeddings = []
+                for node_idx in range(batch.x.size(0)):  # Loop over each node in the batch
+                    node_walks_embeddings = []
+                    for _ in range(num_walks):
+                        # Perform a random walk for the current node
+                        walk_nodes = [node_idx]
+                        current_node = node_idx
+                        for _ in range(walk_length - 1):
+                            neighbors = edge_index[1][edge_index[0] == current_node]
+                            if len(neighbors) > 0:
+                                current_node = neighbors[random.randint(0, len(neighbors) - 1)].item()
+                                walk_nodes.append(current_node)
+                            else:
+                                break
+                        walk_nodes.reverse()  # Reverse the list to start with the initial node
+                        # Create embeddings using Mamba for the node-edge states (you need to define how to extract these states)
+                        # For simplicity, assuming `mamba_model` is an instance of the Mamba model you want to use
+                        node_edge_states = ... # TODO (evan) Extract or construct node-edge states from walk_nodes
+                        walk_embedding = self.self_attn(node_edge_states)  # Assuming self.self_attn is a Mamba model here
+                        node_walks_embeddings.append(walk_embedding)
+                    # Concatenate all walk embeddings for the current node and append to the walks_embeddings list
+                    walks_embeddings.append(torch.cat(node_walks_embeddings, dim=0))
+                # Concatenate embeddings from all nodes to form a batch-wide embedding tensor
+                batch_embedding = torch.cat(walks_embeddings, dim=0)
+                # Process the batch_embedding through an MLP as specified
+                mlp_output = self.mlp(batch_embedding)
+                h_attn = mlp_output
             elif self.global_model_type == 'Subgraph_Mamba_L65':
                 degrees = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
                 max_degree = torch.max(degrees)
