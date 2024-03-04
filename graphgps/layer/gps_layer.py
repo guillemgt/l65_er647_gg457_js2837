@@ -7,7 +7,7 @@ import torch_geometric.nn as pygnn
 from performer_pytorch import SelfAttention
 from torch_geometric.data import Batch
 from torch_geometric.nn import Linear as Linear_pyg
-from torch_geometric.utils import to_dense_batch, k_hop_subgraph, degree, sort_edge_index, to_undirected, subgraph, to_dense_adj, dense_to_sparse
+from torch_geometric.utils import to_dense_batch, k_hop_subgraph, degree, subgraph
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
 from torch_geometric.nn import global_mean_pool
@@ -90,8 +90,8 @@ def lexsort(
         out = out.gather(dim, index)
     return out
 
-def dynamic_sampling_ratio(degree, max_degree, min_bound=(0.3, 0.1), max_bound=(0.9, 0.4)):
-    normalized_degree = degree / max_degree
+def dynamic_sampling_ratio(deg, max_degree, min_bound=(0.5, 0.4), max_bound=(0.9, 0.8)):
+    normalized_degree = deg / max_degree
 
     low_bound = min_bound[1] + (max_bound[1] - min_bound[1]) * normalized_degree
     high_bound = min_bound[0] + (max_bound[0] - min_bound[0]) * normalized_degree
@@ -103,24 +103,80 @@ def dynamic_sampling_ratio(degree, max_degree, min_bound=(0.3, 0.1), max_bound=(
     
     return sampling_ratio
 
-def sample_random_subgraphs_from_k_hop(node_idx, degree, max_degree, num_hops, edge_index, num_samples=10, num_nodes=None):
+class SubgraphEncoder(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(SubgraphEncoder, self).__init__()
+        self.projection = nn.Linear(input_dim, output_dim)
+
+    def forward(self, x, edge_attr):
+        # Your existing aggregation logic here
+        target_device = x.device
+        # Aggregate node features
+        if x.size(0) > 0:  # Check if there are nodes
+            node_features_aggregated = torch.mean(x, dim=0, keepdim=True).to(target_device)
+        else:
+            # Handle case with no nodes
+            node_features_aggregated = torch.zeros(1, x.size(1)).to(target_device)
+        
+        # Aggregate edge features
+        if edge_attr is not None and edge_attr.size(0) > 0:  # Check if there are edges
+            edge_features_aggregated = torch.mean(edge_attr, dim=0, keepdim=True).to(target_device)
+        else:
+            # Handle case with no edges
+            edge_features_aggregated = torch.zeros(1, edge_attr.size(1)).to(target_device) if edge_attr is not None else torch.zeros(1, x.size(1)).to(target_device)
+        
+        subgraph_representation = torch.cat([node_features_aggregated, edge_features_aggregated], dim=1).to(target_device)
+        del edge_features_aggregated
+        del node_features_aggregated
+        # Project back to original dimension
+        return self.projection(subgraph_representation)
+
+
+# def encode_subgraph_simple(x, edge_attr):
+#     target_device = x.device
+#     if x.size(0) > 0:
+#         node_features_aggregated = torch.mean(x, dim=0, keepdim=True).to(target_device)
+#     else:
+#         node_features_aggregated = torch.zeros(1, x.size(1)).to(target_device)
+
+#     if edge_attr is not None and edge_attr.size(0) > 0:  # Check if there are edges
+#         edge_features_aggregated = torch.mean(edge_attr, dim=0, keepdim=True).to(target_device)
+#     else:
+#         edge_features_aggregated = torch.zeros(1, edge_attr.size(1)).to(target_device) if edge_attr is not None else torch.zeros(1, x.size(1)).to(target_device)
+
+#     print(f"Node features device: {node_features_aggregated.device}")
+#     print(f"Edge features device: {edge_features_aggregated.device}")
+#     print(f"Target device: {x.device}")
+    
+#     subgraph_representation = torch.cat([node_features_aggregated, edge_features_aggregated], dim=1)
+    
+#     return subgraph_representation
+
+
+def sample_random_subgraphs_from_k_hop(node_idx, deg, max_degree, num_hops, edge_index, num_samples=1, num_nodes=None):
     sampled_subgraphs = []
 
     subgraph_node_indices, subgraph_edge_indices, _, edge_mask = k_hop_subgraph(
-        node_idx, num_hops, edge_index, relabel_nodes=True, num_nodes=num_nodes
+        node_idx, num_hops, edge_index, num_nodes=num_nodes
     )
 
-    for _ in range(num_samples):
-        sampling_ratio = dynamic_sampling_ratio(degree, max_degree)
+    if subgraph_edge_indices.size(1) == 0:
+        print('loool')
+        print(subgraph_node_indices)
+        print(subgraph_edge_indices)
+        sampled_subgraphs.append((subgraph_node_indices, None, None))
 
-        # Randomly sample a subset of nodes from the k-hop subgraph
-        num_sub_nodes = int(len(subgraph_node_indices) * sampling_ratio)
-        sampled_nodes = subgraph_node_indices[torch.randperm(subgraph_node_indices.size(0))[:num_sub_nodes]]
+    for _ in range(num_samples):
+        sampling_ratio = 1 if num_hops < 2 else random.uniform(0.5, 1)
+
+        num_sub_nodes = max(int(len(subgraph_node_indices) * sampling_ratio), 1) 
+
+        perm = torch.randperm(subgraph_node_indices.size(0))[:num_sub_nodes]
+        sampled_nodes = subgraph_node_indices[perm]
+
+        _, _, sampled_edge_mask = subgraph(sampled_nodes, subgraph_edge_indices, relabel_nodes=True, return_edge_mask=True)
         
-        # Get the corresponding edge indices for the sampled subgraph
-        sampled_subgraph_edge_index, sampled_edge_mask = subgraph(sampled_nodes, subgraph_edge_indices, relabel_nodes=True)
-        
-        sampled_subgraphs.append((sampled_nodes, sampled_subgraph_edge_index, edge_mask, sampled_edge_mask))
+        sampled_subgraphs.append((sampled_nodes, edge_mask, sampled_edge_mask))
 
     return sampled_subgraphs
 
@@ -138,19 +194,17 @@ def calculate_max_k(degrees, min_k=1, max_k=5, scale_factor=1.0):
 def encode_subgraphs(subgraphs, x, edge_attr, model):
     subgraph_embeddings = []
     for subgraph in subgraphs:
-        sampled_nodes = subgraph[0]
-        sampled_subgraph_edge_index = subgraph[1]
-        edge_mask = subgraph[2]
-        sampled_edge_mask = subgraph[3]
-        sampled_edge_attr = edge_attr[edge_mask][sampled_edge_mask]
+        sampled_nodes, edge_mask, sampled_edge_mask = subgraph
+        if edge_mask is None:
+            subgraph_embeddings.append(x[sampled_nodes])
+        else:
+            sampled_edge_attr = edge_attr[edge_mask][sampled_edge_mask]
 
-        subgraph_data = Data(x=x[sampled_nodes], edge_index=sampled_subgraph_edge_index, edge_attr=sampled_edge_attr)
+            subgraph_embedding = model(x[sampled_nodes], sampled_edge_attr)
+            subgraph_embeddings.append(subgraph_embedding)
 
-        subgraph_embedding = model(subgraph_data)
-        
-        subgraph_embeddings.append(subgraph_embedding)
+    return torch.stack(subgraph_embeddings).mean(dim=0)
 
-    return torch.mean(torch.stack(subgraph_embeddings), dim=0)
 
 
 def permute_within_batch(batch):
@@ -333,7 +387,7 @@ class GPSLayer(nn.Module):
             self.self_attn = MeanModel(d_model=dim_h, # Model dimension d_model
                         expand=2,    # Block expansion factor
                     )
-        elif 'Subgraph_Mamba_L65' in self.global_model_type:
+        elif 'Subgraph_Mamba_L65' in global_model_type:
             self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
                     d_state=16,  # SSM state expansion factor
                     d_conv=4,    # Local convolution width
@@ -469,63 +523,45 @@ class GPSLayer(nn.Module):
 
 
             elif self.global_model_type == 'Subgraph_Mamba_L65':
+                print('Lets go')
                 degrees = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
                 max_degree = torch.max(degrees)
                 max_k_values = calculate_max_k(degrees)
+                max_subgraphs = max(max_k_values)
                 subgraph_encodings = []
-                node_subgraph_embeddings = []
-                for node_idx in range(batch.x.size(0)):  # Loop over each node in the batch
-                    # Sample subgraphs for different k values
+                num_nodes = batch.x.shape[0]
+                subgraph_encoder = SubgraphEncoder(batch.x.shape[1] + batch.edge_attr.shape[1], batch.x.shape[1]).to(batch.x.device)
+                node_subgraph_embeddings = torch.zeros(batch.x.shape[0], max_subgraphs,  batch.x.shape[1], device=batch.x.device)
+                heuristic = heuristic_fns[self.mamba_heuristics[0]][0](batch)[0]
+                
+
+                for node_idx in range(num_nodes):  
                     subgraph_encodings = []
-                    max_k = max_k_values[node_idx]
-                    degree = degrees[node_idx]
-                    for k in range(1, max_k + 1):  # 'max_k' is the maximum hop you consider
-                        subgraphs = sample_random_subgraphs_from_k_hop(node_idx, degree, max_degree, k, batch.edge_index, num_nodes=batch.x.size(0))
-                        subgraph_encoding = encode_subgraphs(subgraphs, batch.x, batch.edge_attr, self.local_model)
+
+                    for k in range(1, max_k_values[node_idx] + 1):
+                        subgraphs = sample_random_subgraphs_from_k_hop(node_idx, degrees[node_idx], max_k_values[node_idx], k, batch.edge_index, num_nodes=num_nodes)
+                        subgraph_encoding = encode_subgraphs(subgraphs, batch.x, batch.edge_attr, subgraph_encoder)  # Assume this returns a tensor
                         subgraph_encodings.append(subgraph_encoding)
-                    
-                    # Merge the subgraph encodings for the current node into a single representation
-                    # This could involve averaging, concatenating, or another aggregation method
-                    node_representation = torch.cat(subgraph_encodings, dim=0)
-                    node_subgraph_embeddings.append(node_representation)
 
-                # Initialize lists to hold padded sequences and their masks
-                padded_sequences = []
-                sequence_masks = []
+                    node_subgraph_embeddings[node_idx, :len(subgraph_encodings), :] = torch.cat(subgraph_encodings, dim=0)
 
-                # Maximum length will be determined dynamically
-                max_sequence_length = 0
-                for node_idx in range(batch.x.size(0)):
-                    sequence = []
-                    # Global context
-                    for idx, encodings in enumerate(node_subgraph_embeddings):
-                        if idx != node_idx:
-                            sequence.append(encodings)
-                    random.shuffle(sequence)  # Shuffle global context
-                    # Local context and node's own features
-                    sequence.append(node_subgraph_embeddings[node_idx])
-                    sequence.append(batch.x[node_idx].unsqueeze(0))  # Ensure it's 2D
-                    
-                    # Convert list of tensors into a single tensor (sequence_tensor)
-                    sequence_tensor = torch.cat(sequence, dim=0)
-                    max_sequence_length = max(max_sequence_length, sequence_tensor.size(0))
-                    
-                    # Store the sequence tensor for now; padding will be done in the next step
-                    padded_sequences.append(sequence_tensor)
-                    # Create and store the mask indicating the real length of the sequence
-                    sequence_masks.append(torch.ones(sequence_tensor.size(0), dtype=torch.bool))
-
-                # Step 2: Pad sequences to the max length found
-                for i in range(len(padded_sequences)):
-                    padding_length = max_sequence_length - padded_sequences[i].size(0)
-                    padded_sequences[i] = F.pad(padded_sequences[i], pad=(0, 0, 0, padding_length), mode='constant', value=0)
-                    sequence_masks[i] = F.pad(sequence_masks[i], pad=(0, padding_length), mode='constant', value=False)
-
-                # Convert lists to tensors
-                padded_sequences_tensor = torch.stack(padded_sequences)
-                sequence_masks_tensor = torch.stack(sequence_masks)
-
-                h_attn = self.self_attn(padded_sequences_tensor)[sequence_masks_tensor]
+                    del subgraph_encodings  
+                    torch.cuda.empty_cache()
+    
+                num_nodes = len(node_subgraph_embeddings)
+                subgraph_sequence = torch.cat([node_subgraph_embeddings[idx] for idx in range(num_nodes)], dim=0)
+                del node_subgraph_embeddings    
+                h_ind_perm = lexsort([heuristic, batch.batch])
+                node_sequence = h[h_ind_perm]
+                length = node_sequence.shape[0]
+                h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                final_sequence = torch.cat((subgraph_sequence, node_sequence), dim=0)
+                del subgraph_sequence
+                final_sequence = final_sequence.unsqueeze(0)
+                final_embeddings = self.self_attn(final_sequence)
+                del final_sequence
+                h_attn = final_embeddings.squeeze(0)[-length:][h_ind_perm_reverse]
+                torch.cuda.empty_cache()
             
             elif self.global_model_type == 'MambaL65':
                 # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
@@ -598,6 +634,7 @@ class GPSLayer(nn.Module):
                 h_attn = sum(mamba_arr) / len(mamba_arr)
             
             elif self.global_model_type == 'MeanL65':
+                print('LOOOOOL: ', h_dense.shape)
                 h_attn = self.self_attn(h_dense, mask)[mask]    
             
             elif self.global_model_type == 'Mamba':
