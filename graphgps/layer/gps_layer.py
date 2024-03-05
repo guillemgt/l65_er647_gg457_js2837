@@ -161,9 +161,6 @@ def sample_random_subgraphs_from_k_hop(node_idx, deg, max_degree, num_hops, edge
     )
 
     if subgraph_edge_indices.size(1) == 0:
-        print('loool')
-        print(subgraph_node_indices)
-        print(subgraph_edge_indices)
         sampled_subgraphs.append((subgraph_node_indices, None, None))
     
     else:
