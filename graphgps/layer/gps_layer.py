@@ -391,6 +391,7 @@ class GPSLayer(nn.Module):
                     d_conv=4,    # Local convolution width
                     expand=1,    # Block expansion factor
                 )
+            self.subgraph_encoder = SubgraphEncoder(dim_h + dim_h, dim_h) # TODO(guillem): assuming the number of edge features is the same as the number of node features
         elif 'MambaL65' in global_model_type:
             num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
             self.self_attn = torch.nn.ModuleList()
@@ -528,38 +529,54 @@ class GPSLayer(nn.Module):
                 max_subgraphs = max(max_k_values)
                 subgraph_encodings = []
                 num_nodes = batch.x.shape[0]
-                subgraph_encoder = SubgraphEncoder(batch.x.shape[1] + batch.edge_attr.shape[1], batch.x.shape[1]).to(batch.x.device)
-                node_subgraph_embeddings = torch.zeros(batch.x.shape[0], max_subgraphs,  batch.x.shape[1], device=batch.x.device)
                 heuristic = heuristic_fns[self.mamba_heuristics[0]][0](batch)[0]
-                
 
-                for node_idx in range(num_nodes):  
-                    subgraph_encodings = []
+                encodings = []
+                heuristics = []
+                subgraph_indices = [] # Stores the index of a subgraph for each specific node, or the node itself
+                batches = []
+                node_indices = []
+
+                # NOTE(guillem): For now, we will order the sequence as (sugraph 1 for node 1), (sugraph 1 for node 2), ..., (subgraph 1 for node `num_nodes-1`), (subgraph 2 for node 1), ..., node 1, node 2, ...
+                # where the nodes are ordered according to `heuristic` 
+                
+                for node_idx in range(num_nodes):
+
+                    # Add the subgraphs
 
                     for k in range(1, max_k_values[node_idx] + 1):
                         subgraphs = sample_random_subgraphs_from_k_hop(node_idx, degrees[node_idx], max_k_values[node_idx], k, batch.edge_index, num_nodes=num_nodes)
-                        subgraph_encoding = encode_subgraphs(subgraphs, batch.x, batch.edge_attr, subgraph_encoder)  # Assume this returns a tensor
-                        subgraph_encodings.append(subgraph_encoding)
+                        subgraph_encoding = encode_subgraphs(subgraphs, batch.x, batch.edge_attr, self.subgraph_encoder)  # Assume this returns a tensor
+                        encodings.append(subgraph_encoding)
+                        heuristics.append(heuristic[node_idx])
+                        batches.append(batch.batch[node_idx])
+                        subgraph_indices.append(k)
 
-                    node_subgraph_embeddings[node_idx, :len(subgraph_encodings), :] = torch.cat(subgraph_encodings, dim=0)
+                    # Add the node
+                    encodings.append(h[node_idx].unsqueeze(0))
+                    heuristics.append(heuristic[node_idx])
+                    batches.append(batch.batch[node_idx])
+                    subgraph_indices.append(max_k_values+1)
+                    node_indices.append(len(encodings) - 1)
+                
+                encodings_sequence = torch.cat(encodings, dim=0)
+                heuristics_sequence = torch.stack(heuristics)
+                batches_sequence = torch.stack(batches)
+                subgraph_indices_sequence = torch.tensor(subgraph_indices, device=encodings_sequence.device)
 
-                    del subgraph_encodings  
-                    torch.cuda.empty_cache()
-    
-                num_nodes = len(node_subgraph_embeddings)
-                subgraph_sequence = torch.cat([node_subgraph_embeddings[idx] for idx in range(num_nodes)], dim=0)
-                del node_subgraph_embeddings    
-                h_ind_perm = lexsort([heuristic, batch.batch])
-                node_sequence = h[h_ind_perm]
-                length = node_sequence.shape[0]
+                # Reorder the sequence according to the heuristics and the index of the subgraph or whether it is a node
+                h_ind_perm = lexsort([heuristics_sequence, subgraph_indices_sequence, batches_sequence])
+                h_dense, mask = to_dense_batch(encodings_sequence[h_ind_perm], batches_sequence[h_ind_perm])
                 h_ind_perm_reverse = torch.argsort(h_ind_perm)
-                final_sequence = torch.cat((subgraph_sequence, node_sequence), dim=0)
-                del subgraph_sequence
-                final_sequence = final_sequence.unsqueeze(0)
-                final_embeddings = self.self_attn(final_sequence)
-                del final_sequence
-                h_attn = final_embeddings.squeeze(0)[-length:][h_ind_perm_reverse]
+                del heuristics_sequence, batches_sequence
                 torch.cuda.empty_cache()
+
+                # Run mamba to compute the final embeddings for subgraphs and nodes
+                final_embeddings = self.self_attn(h_dense)[mask]
+
+                # Get the indices of the n-th node in the final embedding sequence and get the corresponding embedding
+                node_indices_in_reordered_sequence_reverse = h_ind_perm_reverse[node_indices]
+                h_attn = final_embeddings[node_indices_in_reordered_sequence_reverse]
             
             elif self.global_model_type == 'MambaL65':
                 # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
@@ -632,7 +649,6 @@ class GPSLayer(nn.Module):
                 h_attn = sum(mamba_arr) / len(mamba_arr)
             
             elif self.global_model_type == 'MeanL65':
-                print('LOOOOOL: ', h_dense.shape)
                 h_attn = self.self_attn(h_dense, mask)[mask]    
             
             elif self.global_model_type == 'Mamba':
