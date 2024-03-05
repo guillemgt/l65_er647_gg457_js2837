@@ -2,7 +2,7 @@ out_dir: results
 metric_best: ap
 wandb:
   use: True
-  project: peptides_structure
+  project: peptides_subgraph
   entity: l65
 dataset:
   format: OGB

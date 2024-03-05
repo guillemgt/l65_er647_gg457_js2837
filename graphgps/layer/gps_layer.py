@@ -165,18 +165,19 @@ def sample_random_subgraphs_from_k_hop(node_idx, deg, max_degree, num_hops, edge
         print(subgraph_node_indices)
         print(subgraph_edge_indices)
         sampled_subgraphs.append((subgraph_node_indices, None, None))
+    
+    else:
+        for _ in range(num_samples):
+            sampling_ratio = 1 if num_hops < 2 else random.uniform(0.5, 1)
 
-    for _ in range(num_samples):
-        sampling_ratio = 1 if num_hops < 2 else random.uniform(0.5, 1)
+            num_sub_nodes = max(int(len(subgraph_node_indices) * sampling_ratio), 1) 
 
-        num_sub_nodes = max(int(len(subgraph_node_indices) * sampling_ratio), 1) 
+            perm = torch.randperm(subgraph_node_indices.size(0))[:num_sub_nodes]
+            sampled_nodes = subgraph_node_indices[perm]
 
-        perm = torch.randperm(subgraph_node_indices.size(0))[:num_sub_nodes]
-        sampled_nodes = subgraph_node_indices[perm]
-
-        _, _, sampled_edge_mask = subgraph(sampled_nodes, subgraph_edge_indices, relabel_nodes=True, return_edge_mask=True)
-        
-        sampled_subgraphs.append((sampled_nodes, edge_mask, sampled_edge_mask))
+            _, _, sampled_edge_mask = subgraph(sampled_nodes, subgraph_edge_indices, relabel_nodes=True, return_edge_mask=True)
+            
+            sampled_subgraphs.append((sampled_nodes, edge_mask, sampled_edge_mask))
 
     return sampled_subgraphs
 
