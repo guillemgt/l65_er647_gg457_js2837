@@ -238,7 +238,7 @@ def load_dataset_master(format, name, dataset_dir):
         loaded_all_pe_stats = True
         for pe_name in pe_enabled_list:
             # Check if we have saved PE statistics for this dataset.
-            pe_stats_file = osp.join(dataset_dir, f'posenc_stats_{pe_name}.pt')
+            pe_stats_file = osp.join(dataset_dir, f'posenc_stats_{pe_name}_{cfg.posenc_LapPE.eigen.max_freqs}.pt')
             if pe_name == 'LapPE' and osp.exists(pe_stats_file):
                 logging.info(f"  ...loading precomputed PE stats for {pe_name}")
                 pe_stats = torch.load(pe_stats_file)
@@ -255,7 +255,7 @@ def load_dataset_master(format, name, dataset_dir):
                                     show_progress=True
                                     )
             for pe_name in pe_enabled_list:
-                pe_stats_file = osp.join(dataset_dir, f'posenc_stats_{pe_name}.pt')
+                pe_stats_file = osp.join(dataset_dir, f'posenc_stats_{pe_name}_{cfg.posenc_LapPE.eigen.max_freqs}.pt')
                 if pe_name == 'LapPE':
                     # Save dataset.EigVals, dataset.EigVecs to pe_stats_file
                     EigVals = [dataset.get(i).EigVals for i in range(len(dataset))]

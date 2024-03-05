@@ -209,6 +209,170 @@ class ConvModel(nn.Module):
 
         return x
 
+class GraphSSM(nn.Module):
+    def __init__(self,
+                 d_model, # D in Mamba paper
+                 d_state, # N in Mamba paper
+                 expand, # E in Mamba paper
+                 ):
+        super().__init__()
+        self.d_state = d_state
+        self.d_model = d_model
+
+        d_inner = expand*d_model # Number of channels in the SSM
+        self.d_inner = d_inner
+        self.in_proj = nn.Linear(d_model, 2*d_inner)
+        self.B = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.C = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.Delta = nn.Parameter(torch.rand(1, d_inner))
+        # self.A_log = nn.Parameter(torch.complex(torch.rand(1, d_inner, d_state), 1.0-2.0*torch.rand(1, d_inner, d_state)))
+        self.A_log = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.out_proj = nn.Linear(d_inner, d_model)
+
+    def _change_basis(self, Q, X):
+        # Q: (B, L', L)
+        # X: (B, L, ED, N)
+        # output: (B, L', ED, N)
+        Xa = X.view(X.shape[0], X.shape[1], X.shape[2]*X.shape[3])  # (B, L, ED*N)
+        QX = torch.bmm(Q, Xa)  # (B, L', ED*N)
+        QX = QX.view(X.shape[0], Q.shape[1], X.shape[2], X.shape[3])  # (B, L', ED, N)
+        return QX
+
+    def forward(self, x, attn_mask, EigVecs, EigVals):
+        # x: (B, L, D)
+        # attn_mask: (B, L)
+        # EigVecs: (B, L, L')
+        # EigVals: (B, L')
+        EigVals = EigVals.view(*EigVals.shape, 1, 1) # Eigenvalues of L = 1-M
+        EigVals = 1.0 - EigVals # Eigenvalues of M = 1-L
+
+        # Gated MLP
+        x = self.in_proj(x) # (B, L, 2*ED)
+        x, z = torch.split(x, [self.d_model, self.d_model], dim=-1) # (B, L, ED), (B, L, ED)
+        x = x*F.silu(z) # (B, L, ED)
+
+        # Selective parameters
+        B = self.B # (1, ED, N)
+        C = self.C # (1, ED, N)
+        delta = F.softplus(self.Delta) # (1, ED)
+        A = -torch.exp(self.A_log) # (1, ED, N)
+        
+        # Discretisation
+        deltaA = delta.unsqueeze(-1) * A # (1, ED, N)
+        Abar = torch.exp(deltaA) # (1, ED, N)
+        deltaB = delta.unsqueeze(-1) * B # (1, ED, N)
+        Bbar = deltaB # (1, ED, N)
+
+        XB = (x.unsqueeze(-1) * Bbar) # (B, L, ED, N)
+
+        # # # Propagate along graph
+        QTXB = self._change_basis(EigVecs.permute(0,2,1), XB) # (B, L', ED, N)
+        # lambdaQTXBA = QTXB
+        lambdaA = EigVals*Abar.unsqueeze(1)
+        lambdaQTXBA = (lambdaA / (1.0 - lambdaA)) * QTXB # (B, L', ED, N)
+        MXBA = self._change_basis(EigVecs, lambdaQTXBA) # (B, L, ED, N)
+        MXBA = XB + MXBA
+        # MXBA = XB
+
+        # Project back to original space
+        MXBAC = (MXBA * C.unsqueeze(0)).sum(dim=-1) #(B, L, ED)
+        # MXBAC = MXBAC.real
+
+        # Residual connection
+        y = x + MXBAC # (B, L, ED)
+
+        # Output projection
+        y = F.silu(y) # (B, L, ED)
+        y = self.out_proj(y) # (B, L, D)
+        print(y.shape)
+        return y
+    
+
+
+class GraphSSSM(nn.Module):
+    def __init__(self,
+                 d_model, # D in Mamba paper
+                 d_state, # N in Mamba paper
+                 expand, # E in Mamba paper
+                 B_selective=True,
+                 C_selective=True,
+                 Delta_selective=True):
+        super().__init__()
+        self.d_state = d_state
+        self.d_model = d_model
+
+        d_inner = expand*d_model # Number of channels in the SSM
+        self.d_inner = d_inner
+        self.in_proj = nn.Linear(d_model, 2*d_inner)
+        self.s_proj = nn.Linear(d_inner, 1+2*d_state) # s_Delta, s_B, s_C in Mamba paper
+        self.parameter_delta = nn.Parameter(torch.zeros(1, 1, d_inner))
+        # self.A_log = nn.Parameter(torch.complex(torch.rand(1, d_inner, d_state), 1.0-2.0*torch.rand(1, d_inner, d_state)))
+        self.A_log = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.out_proj = nn.Linear(d_inner, d_model)
+
+    def _change_basis(self, Q, X):
+        # Q: (B, L', L)
+        # X: (B, L, ED, N)
+        # output: (B, L', ED, N)
+        Xa = X.view(X.shape[0], X.shape[1], X.shape[2]*X.shape[3])  # (B, L, ED*N)
+        QX = torch.bmm(Q, Xa)  # (B, L', ED*N)
+        QX = QX.view(X.shape[0], Q.shape[1], X.shape[2], X.shape[3])  # (B, L', ED, N)
+        return QX
+
+    def forward(self, x, attn_mask, EigVecs, EigVals):
+        # x: (B, L, D)
+        # attn_mask: (B, L)
+        # EigVecs: (B, L, L')
+        # EigVals: (B, L')
+        attn_mask = attn_mask.view(*attn_mask.shape, 1, 1)
+        EigVals = EigVals.view(*EigVals.shape, 1, 1) # Eigenvalues of L = 1-M
+        EigVals = 1.0 - EigVals # Eigenvalues of M = 1-L
+
+
+        # Gated MLP
+        x = self.in_proj(x) # (B, L, 2*ED)
+        x, z = torch.split(x, [self.d_model, self.d_model], dim=-1) # (B, L, ED), (B, L, ED)
+        x = x*F.silu(z) # (B, L, ED)
+
+        # Selective parameters
+        deltaBC = self.s_proj(x) # (B, L, 1+2*N)
+        delta, B, C = torch.split(deltaBC, [1, self.d_state, self.d_state], dim=-1) # (B, L, 1), (B, L, N), (B, L, N)
+        delta = F.softplus(self.parameter_delta + delta.expand(-1, -1, self.d_inner)) # (B, L, ED)
+        A = -torch.exp(self.A_log) # (1, ED, N)
+        
+        # Discretisation
+        deltaA = delta.unsqueeze(-1) * A # (B, L, ED, N)
+        Abar = torch.exp(deltaA) # (B, L, ED, N)
+        # Bbar_A_multiplier = ((Abar - 1.0) / deltaA) # (B, L, ED, N)
+        deltaB = delta.unsqueeze(-1) * B.unsqueeze(2) # (B, L, ED, N)
+        Bbar = deltaB # (B, L, ED, N)
+
+        # Compute transition matrix
+        XB = (x.unsqueeze(-1) * Bbar) # (B, L, ED, N)
+        # XBA = XB * (1.0 / (1.0 - Abar)) # (B, L, ED, N)
+        XBA = XB
+        # XBA = XBA.real
+
+        # # Propagate along graph
+        QTXBA = self._change_basis(EigVecs.permute(0,2,1), XBA) # (B, L', ED, N)
+        lambdaQTXBA = (1.0 / (1.0 - EigVals)) * QTXBA # (B, L', ED, N)
+        MXBA = self._change_basis(EigVecs, lambdaQTXBA) # (B, L, ED, N)
+        # MXBA = XBA
+
+        # Project back to original space
+        MXBAC = (MXBA @ C.unsqueeze(-1)).squeeze(-1) # (B, L, ED, N) @ (B, L, N, 1) -> (B, L, ED, 1) -> (B, L, ED)
+        # MXBAC = MXBAC.real
+
+        # Residual connection
+        y = x + MXBAC # (B, L, ED)
+
+        # Output projection
+        y = F.silu(y) # (B, L, ED)
+        y = self.out_proj(y) # (B, L, D)
+        print(y.shape)
+        return y
+
+
 class GPSLayer(nn.Module):
     """Local MPNN + full graph attention x-former layer.
     """
@@ -304,6 +468,11 @@ class GPSLayer(nn.Module):
                         expand=2,    # Block expansion factor
                         kernel_size=kernel_size
                     )
+        elif 'GraphSSML65' in global_model_type:
+            self.self_attn = GraphSSM(d_model=dim_h, # Model dimension d_model
+                d_state=16,  # SSM state expansion factor
+                expand=1,    # Block expansion factor
+            )
         elif 'SharedMambaL65' in global_model_type:
             self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
                 d_state=16,  # SSM state expansion factor
@@ -429,7 +598,7 @@ class GPSLayer(nn.Module):
 
         # Multi-head attention.
         if self.self_attn is not None:
-            if self.global_model_type in ['Transformer', 'Performer', 'BigBird', 'Mamba', 'MeanL65', 'ConvL65']:
+            if self.global_model_type in ['Transformer', 'Performer', 'BigBird', 'Mamba', 'MeanL65', 'ConvL65', 'GraphSSML65']:
                 h_dense, mask = to_dense_batch(h, batch.batch)
             if self.global_model_type == 'Transformer':
                 h_attn = self._sa_block(h_dense, None, ~mask)[mask]
@@ -592,6 +761,11 @@ class GPSLayer(nn.Module):
                     mamba_arr.append(h_attn)
 
                 h_attn = sum(mamba_arr) / len(mamba_arr)  
+            
+            elif self.global_model_type == 'GraphSSML65':
+                EigVecs_dense, _ = to_dense_batch(batch.EigVecs, batch.batch)
+                EigVals_dense, _ = to_dense_batch(batch.EigVals.squeeze(-1), batch.batch)
+                h_attn = self.self_attn(h_dense, mask, EigVecs_dense, EigVals_dense[:,0,:])[mask]  
             
             elif self.global_model_type == 'Mamba':
                 h_attn = self.self_attn(h_dense)[mask]                
