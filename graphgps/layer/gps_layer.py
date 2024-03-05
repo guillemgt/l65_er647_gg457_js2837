@@ -7,19 +7,21 @@ import torch_geometric.nn as pygnn
 from performer_pytorch import SelfAttention
 from torch_geometric.data import Batch
 from torch_geometric.nn import Linear as Linear_pyg
-from torch_geometric.utils import to_dense_batch
-
+from torch_geometric.utils import to_dense_batch, k_hop_subgraph, degree, subgraph
+from torch_geometric.data import Data
+from torch_geometric.nn import GCNConv
+from torch_geometric.nn import global_mean_pool
 from graphgps.layer.gatedgcn_layer import GatedGCNLayer
 from graphgps.layer.gine_conv_layer import GINEConvESLapPE
 from graphgps.layer.bigbird_layer import SingleBigBirdLayer
 from mamba_ssm import Mamba
-
-from torch_geometric.utils import degree, sort_edge_index
 from typing import List
+import random
 
 import numpy as np
 import torch
 from torch import Tensor
+
 
 def permute_nodes_within_identity(identities):
     unique_identities, inverse_indices = torch.unique(identities, return_inverse=True)
@@ -87,6 +89,120 @@ def lexsort(
         index = index.argsort(dim=dim, descending=descending, stable=True)
         out = out.gather(dim, index)
     return out
+
+def dynamic_sampling_ratio(deg, max_degree, min_bound=(0.5, 0.4), max_bound=(0.9, 0.8)):
+    normalized_degree = deg / max_degree
+
+    low_bound = min_bound[1] + (max_bound[1] - min_bound[1]) * normalized_degree
+    high_bound = min_bound[0] + (max_bound[0] - min_bound[0]) * normalized_degree
+    
+    low_bound = max(0.1, min(low_bound, 0.9))
+    high_bound = max(low_bound, min(high_bound, 0.9))
+    
+    sampling_ratio = torch.rand(1).item() * (high_bound - low_bound) + low_bound
+    
+    return sampling_ratio
+
+class SubgraphEncoder(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(SubgraphEncoder, self).__init__()
+        self.projection = nn.Linear(input_dim, output_dim)
+
+    def forward(self, x, edge_attr):
+        # Your existing aggregation logic here
+        target_device = x.device
+        # Aggregate node features
+        if x.size(0) > 0:  # Check if there are nodes
+            node_features_aggregated = torch.mean(x, dim=0, keepdim=True).to(target_device)
+        else:
+            # Handle case with no nodes
+            node_features_aggregated = torch.zeros(1, x.size(1)).to(target_device)
+        
+        # Aggregate edge features
+        if edge_attr is not None and edge_attr.size(0) > 0:  # Check if there are edges
+            edge_features_aggregated = torch.mean(edge_attr, dim=0, keepdim=True).to(target_device)
+        else:
+            # Handle case with no edges
+            edge_features_aggregated = torch.zeros(1, edge_attr.size(1)).to(target_device) if edge_attr is not None else torch.zeros(1, x.size(1)).to(target_device)
+        
+        subgraph_representation = torch.cat([node_features_aggregated, edge_features_aggregated], dim=1).to(target_device)
+        del edge_features_aggregated
+        del node_features_aggregated
+        # Project back to original dimension
+        return self.projection(subgraph_representation)
+
+
+# def encode_subgraph_simple(x, edge_attr):
+#     target_device = x.device
+#     if x.size(0) > 0:
+#         node_features_aggregated = torch.mean(x, dim=0, keepdim=True).to(target_device)
+#     else:
+#         node_features_aggregated = torch.zeros(1, x.size(1)).to(target_device)
+
+#     if edge_attr is not None and edge_attr.size(0) > 0:  # Check if there are edges
+#         edge_features_aggregated = torch.mean(edge_attr, dim=0, keepdim=True).to(target_device)
+#     else:
+#         edge_features_aggregated = torch.zeros(1, edge_attr.size(1)).to(target_device) if edge_attr is not None else torch.zeros(1, x.size(1)).to(target_device)
+
+#     print(f"Node features device: {node_features_aggregated.device}")
+#     print(f"Edge features device: {edge_features_aggregated.device}")
+#     print(f"Target device: {x.device}")
+    
+#     subgraph_representation = torch.cat([node_features_aggregated, edge_features_aggregated], dim=1)
+    
+#     return subgraph_representation
+
+
+def sample_random_subgraphs_from_k_hop(node_idx, deg, max_degree, num_hops, edge_index, num_samples=1, num_nodes=None):
+    sampled_subgraphs = []
+
+    subgraph_node_indices, subgraph_edge_indices, _, edge_mask = k_hop_subgraph(
+        node_idx, num_hops, edge_index, num_nodes=num_nodes
+    )
+
+    if subgraph_edge_indices.size(1) == 0:
+        sampled_subgraphs.append((subgraph_node_indices, None, None))
+    
+    else:
+        for _ in range(num_samples):
+            sampling_ratio = 1 if num_hops < 2 else random.uniform(0.5, 1)
+
+            num_sub_nodes = max(int(len(subgraph_node_indices) * sampling_ratio), 1) 
+
+            perm = torch.randperm(subgraph_node_indices.size(0))[:num_sub_nodes]
+            sampled_nodes = subgraph_node_indices[perm]
+
+            _, _, sampled_edge_mask = subgraph(sampled_nodes, subgraph_edge_indices, relabel_nodes=True, return_edge_mask=True)
+            
+            sampled_subgraphs.append((sampled_nodes, edge_mask, sampled_edge_mask))
+
+    return sampled_subgraphs
+
+def calculate_max_k(degrees, min_k=1, max_k=5, scale_factor=1.0):
+    normalized_degrees = (degrees - degrees.min()) / (degrees.max() - degrees.min())
+    
+    k_values = max_k - (normalized_degrees * (max_k - min_k) * scale_factor)
+    
+    k_values = torch.clamp(k_values, min=min_k, max=max_k)
+    
+    k_values = torch.round(k_values).long()
+    
+    return k_values
+
+def encode_subgraphs(subgraphs, x, edge_attr, model):
+    subgraph_embeddings = []
+    for subgraph in subgraphs:
+        sampled_nodes, edge_mask, sampled_edge_mask = subgraph
+        if edge_mask is None:
+            subgraph_embeddings.append(x[sampled_nodes])
+        else:
+            sampled_edge_attr = edge_attr[edge_mask][sampled_edge_mask]
+
+            subgraph_embedding = model(x[sampled_nodes], sampled_edge_attr)
+            subgraph_embeddings.append(subgraph_embedding)
+
+    return torch.stack(subgraph_embeddings).mean(dim=0)
+
 
 
 def permute_within_batch(batch):
@@ -462,6 +578,13 @@ class GPSLayer(nn.Module):
             self.self_attn = MeanModel(d_model=dim_h, # Model dimension d_model
                         expand=2,    # Block expansion factor
                     )
+        elif 'Subgraph_Mamba_L65' in global_model_type:
+            self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,    # Local convolution width
+                    expand=1,    # Block expansion factor
+                )
+            self.subgraph_encoder = SubgraphEncoder(dim_h + dim_h, dim_h) # TODO(guillem): assuming the number of edge features is the same as the number of node features
         elif 'ConvL65' in global_model_type:
             kernel_size = int(global_model_type.split('_')[-1])
             self.self_attn = ConvModel(d_model=dim_h, # Model dimension d_model
@@ -606,6 +729,64 @@ class GPSLayer(nn.Module):
                 h_attn = self.self_attn(h_dense, mask=mask)[mask]
             elif self.global_model_type == 'BigBird':
                 h_attn = self.self_attn(h_dense, attention_mask=mask)
+
+
+            elif self.global_model_type == 'Subgraph_Mamba_L65':
+                print('Lets go')
+                degrees = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
+                max_degree = torch.max(degrees)
+                max_k_values = calculate_max_k(degrees)
+                max_subgraphs = max(max_k_values)
+                subgraph_encodings = []
+                num_nodes = batch.x.shape[0]
+                heuristic = heuristic_fns[self.mamba_heuristics[0]][0](batch)[0]
+
+                encodings = []
+                heuristics = []
+                subgraph_indices = [] # Stores the index of a subgraph for each specific node, or the node itself
+                batches = []
+                node_indices = []
+
+                # NOTE(guillem): For now, we will order the sequence as (sugraph 1 for node 1), (sugraph 1 for node 2), ..., (subgraph 1 for node `num_nodes-1`), (subgraph 2 for node 1), ..., node 1, node 2, ...
+                # where the nodes are ordered according to `heuristic` 
+                
+                for node_idx in range(num_nodes):
+
+                    # Add the subgraphs
+
+                    for k in range(1, max_k_values[node_idx] + 1):
+                        subgraphs = sample_random_subgraphs_from_k_hop(node_idx, degrees[node_idx], max_k_values[node_idx], k, batch.edge_index, num_nodes=num_nodes)
+                        subgraph_encoding = encode_subgraphs(subgraphs, batch.x, batch.edge_attr, self.subgraph_encoder)  # Assume this returns a tensor
+                        encodings.append(subgraph_encoding)
+                        heuristics.append(heuristic[node_idx])
+                        batches.append(batch.batch[node_idx])
+                        subgraph_indices.append(k)
+
+                    # Add the node
+                    encodings.append(h[node_idx].unsqueeze(0))
+                    heuristics.append(heuristic[node_idx])
+                    batches.append(batch.batch[node_idx])
+                    subgraph_indices.append(max_k_values+1)
+                    node_indices.append(len(encodings) - 1)
+                
+                encodings_sequence = torch.cat(encodings, dim=0)
+                heuristics_sequence = torch.stack(heuristics)
+                batches_sequence = torch.stack(batches)
+                subgraph_indices_sequence = torch.tensor(subgraph_indices, device=encodings_sequence.device)
+
+                # Reorder the sequence according to the heuristics and the index of the subgraph or whether it is a node
+                h_ind_perm = lexsort([heuristics_sequence, subgraph_indices_sequence, batches_sequence])
+                h_dense, mask = to_dense_batch(encodings_sequence[h_ind_perm], batches_sequence[h_ind_perm])
+                h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                del heuristics_sequence, batches_sequence
+                torch.cuda.empty_cache()
+
+                # Run mamba to compute the final embeddings for subgraphs and nodes
+                final_embeddings = self.self_attn(h_dense)[mask]
+
+                # Get the indices of the n-th node in the final embedding sequence and get the corresponding embedding
+                node_indices_in_reordered_sequence_reverse = h_ind_perm_reverse[node_indices]
+                h_attn = final_embeddings[node_indices_in_reordered_sequence_reverse]
             
             elif self.global_model_type == 'MambaL65':
                 # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
@@ -624,6 +805,8 @@ class GPSLayer(nn.Module):
                 #       similar to bucket but instead of random colors, it permutes nodes within a cluster
                 #   degree, eigen, RWSE:
                 #       different heuristics that are used
+
+                
 
                 permute_iterations = self.mamba_permute_iterations
                 if batch.split == 'train':
