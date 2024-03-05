@@ -288,13 +288,206 @@ class MeanModel(nn.Module):
 
     def forward(self, x, mask):
         mask = mask.unsqueeze(-1)
+
         x_shape = x.shape
         x = x.reshape(-1, x_shape[-1])
         x = self.mlp(x)
         x = x.reshape(x_shape)
+
         x = ((x.sum(dim=-2, keepdim=True) / mask.sum(dim=-2, keepdim=True))*mask)
         x = x.expand(x.shape)
         return x
+    
+class ConvModel(nn.Module):
+    def __init__(self, d_model, expand, kernel_size=11):
+        super().__init__()
+        self.d_model = d_model
+        self.mlp = nn.Sequential(
+            nn.BatchNorm1d(d_model),
+            nn.Linear(d_model, expand*d_model),
+            nn.ReLU(),
+            nn.Linear(expand*d_model, d_model)
+        )
+        self.conv = nn.Conv1d(d_model, d_model, kernel_size=kernel_size, padding='same', groups=d_model)
+
+    def forward(self, x, mask):
+        mask = mask.unsqueeze(-1)
+
+        x_shape = x.shape
+        x = x.reshape(-1, x_shape[-1])
+        x = self.mlp(x)
+        x = x.reshape(x_shape)
+        x = mask*x
+
+        x = x.permute(0, 2, 1)
+        x = self.conv(x)
+        x = x.permute(0, 2, 1)
+
+        return x
+
+class GraphSSM(nn.Module):
+    def __init__(self,
+                 d_model, # D in Mamba paper
+                 d_state, # N in Mamba paper
+                 expand, # E in Mamba paper
+                 ):
+        super().__init__()
+        self.d_state = d_state
+        self.d_model = d_model
+
+        d_inner = expand*d_model # Number of channels in the SSM
+        self.d_inner = d_inner
+        self.in_proj = nn.Linear(d_model, 2*d_inner)
+        self.B = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.C = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.Delta = nn.Parameter(torch.rand(1, d_inner))
+        # self.A_log = nn.Parameter(torch.complex(torch.rand(1, d_inner, d_state), 1.0-2.0*torch.rand(1, d_inner, d_state)))
+        self.A_log = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.out_proj = nn.Linear(d_inner, d_model)
+
+    def _change_basis(self, Q, X):
+        # Q: (B, L', L)
+        # X: (B, L, ED, N)
+        # output: (B, L', ED, N)
+        Xa = X.view(X.shape[0], X.shape[1], X.shape[2]*X.shape[3])  # (B, L, ED*N)
+        QX = torch.bmm(Q, Xa)  # (B, L', ED*N)
+        QX = QX.view(X.shape[0], Q.shape[1], X.shape[2], X.shape[3])  # (B, L', ED, N)
+        return QX
+
+    def forward(self, x, attn_mask, EigVecs, EigVals):
+        # x: (B, L, D)
+        # attn_mask: (B, L)
+        # EigVecs: (B, L, L')
+        # EigVals: (B, L')
+        EigVals = EigVals.view(*EigVals.shape, 1, 1) # Eigenvalues of L = 1-M
+        EigVals = 1.0 - EigVals # Eigenvalues of M = 1-L
+
+        # Gated MLP
+        x = self.in_proj(x) # (B, L, 2*ED)
+        x, z = torch.split(x, [self.d_model, self.d_model], dim=-1) # (B, L, ED), (B, L, ED)
+        x = x*F.silu(z) # (B, L, ED)
+
+        # Selective parameters
+        B = self.B # (1, ED, N)
+        C = self.C # (1, ED, N)
+        delta = F.softplus(self.Delta) # (1, ED)
+        A = -torch.exp(self.A_log) # (1, ED, N)
+        
+        # Discretisation
+        deltaA = delta.unsqueeze(-1) * A # (1, ED, N)
+        Abar = torch.exp(deltaA) # (1, ED, N)
+        deltaB = delta.unsqueeze(-1) * B # (1, ED, N)
+        Bbar = deltaB # (1, ED, N)
+
+        XB = (x.unsqueeze(-1) * Bbar) # (B, L, ED, N)
+
+        # # # Propagate along graph
+        QTXB = self._change_basis(EigVecs.permute(0,2,1), XB) # (B, L', ED, N)
+        # lambdaQTXBA = QTXB
+        lambdaA = EigVals*Abar.unsqueeze(1)
+        lambdaQTXBA = (lambdaA / (1.0 - lambdaA)) * QTXB # (B, L', ED, N)
+        MXBA = self._change_basis(EigVecs, lambdaQTXBA) # (B, L, ED, N)
+        MXBA = XB + MXBA
+        # MXBA = XB
+
+        # Project back to original space
+        MXBAC = (MXBA * C.unsqueeze(0)).sum(dim=-1) #(B, L, ED)
+        # MXBAC = MXBAC.real
+
+        # Residual connection
+        y = x + MXBAC # (B, L, ED)
+
+        # Output projection
+        y = F.silu(y) # (B, L, ED)
+        y = self.out_proj(y) # (B, L, D)
+        print(y.shape)
+        return y
+    
+
+
+class GraphSSSM(nn.Module):
+    def __init__(self,
+                 d_model, # D in Mamba paper
+                 d_state, # N in Mamba paper
+                 expand, # E in Mamba paper
+                 B_selective=True,
+                 C_selective=True,
+                 Delta_selective=True):
+        super().__init__()
+        self.d_state = d_state
+        self.d_model = d_model
+
+        d_inner = expand*d_model # Number of channels in the SSM
+        self.d_inner = d_inner
+        self.in_proj = nn.Linear(d_model, 2*d_inner)
+        self.s_proj = nn.Linear(d_inner, 1+2*d_state) # s_Delta, s_B, s_C in Mamba paper
+        self.parameter_delta = nn.Parameter(torch.zeros(1, 1, d_inner))
+        # self.A_log = nn.Parameter(torch.complex(torch.rand(1, d_inner, d_state), 1.0-2.0*torch.rand(1, d_inner, d_state)))
+        self.A_log = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.out_proj = nn.Linear(d_inner, d_model)
+
+    def _change_basis(self, Q, X):
+        # Q: (B, L', L)
+        # X: (B, L, ED, N)
+        # output: (B, L', ED, N)
+        Xa = X.view(X.shape[0], X.shape[1], X.shape[2]*X.shape[3])  # (B, L, ED*N)
+        QX = torch.bmm(Q, Xa)  # (B, L', ED*N)
+        QX = QX.view(X.shape[0], Q.shape[1], X.shape[2], X.shape[3])  # (B, L', ED, N)
+        return QX
+
+    def forward(self, x, attn_mask, EigVecs, EigVals):
+        # x: (B, L, D)
+        # attn_mask: (B, L)
+        # EigVecs: (B, L, L')
+        # EigVals: (B, L')
+        attn_mask = attn_mask.view(*attn_mask.shape, 1, 1)
+        EigVals = EigVals.view(*EigVals.shape, 1, 1) # Eigenvalues of L = 1-M
+        EigVals = 1.0 - EigVals # Eigenvalues of M = 1-L
+
+
+        # Gated MLP
+        x = self.in_proj(x) # (B, L, 2*ED)
+        x, z = torch.split(x, [self.d_model, self.d_model], dim=-1) # (B, L, ED), (B, L, ED)
+        x = x*F.silu(z) # (B, L, ED)
+
+        # Selective parameters
+        deltaBC = self.s_proj(x) # (B, L, 1+2*N)
+        delta, B, C = torch.split(deltaBC, [1, self.d_state, self.d_state], dim=-1) # (B, L, 1), (B, L, N), (B, L, N)
+        delta = F.softplus(self.parameter_delta + delta.expand(-1, -1, self.d_inner)) # (B, L, ED)
+        A = -torch.exp(self.A_log) # (1, ED, N)
+        
+        # Discretisation
+        deltaA = delta.unsqueeze(-1) * A # (B, L, ED, N)
+        Abar = torch.exp(deltaA) # (B, L, ED, N)
+        # Bbar_A_multiplier = ((Abar - 1.0) / deltaA) # (B, L, ED, N)
+        deltaB = delta.unsqueeze(-1) * B.unsqueeze(2) # (B, L, ED, N)
+        Bbar = deltaB # (B, L, ED, N)
+
+        # Compute transition matrix
+        XB = (x.unsqueeze(-1) * Bbar) # (B, L, ED, N)
+        # XBA = XB * (1.0 / (1.0 - Abar)) # (B, L, ED, N)
+        XBA = XB
+        # XBA = XBA.real
+
+        # # Propagate along graph
+        QTXBA = self._change_basis(EigVecs.permute(0,2,1), XBA) # (B, L', ED, N)
+        lambdaQTXBA = (1.0 / (1.0 - EigVals)) * QTXBA # (B, L', ED, N)
+        MXBA = self._change_basis(EigVecs, lambdaQTXBA) # (B, L, ED, N)
+        # MXBA = XBA
+
+        # Project back to original space
+        MXBAC = (MXBA @ C.unsqueeze(-1)).squeeze(-1) # (B, L, ED, N) @ (B, L, N, 1) -> (B, L, ED, 1) -> (B, L, ED)
+        # MXBAC = MXBAC.real
+
+        # Residual connection
+        y = x + MXBAC # (B, L, ED)
+
+        # Output projection
+        y = F.silu(y) # (B, L, ED)
+        y = self.out_proj(y) # (B, L, D)
+        print(y.shape)
+        return y
+
 
 class GPSLayer(nn.Module):
     """Local MPNN + full graph attention x-former layer.
@@ -381,7 +574,7 @@ class GPSLayer(nn.Module):
             bigbird_cfg.n_heads = num_heads
             bigbird_cfg.dropout = dropout
             self.self_attn = SingleBigBirdLayer(bigbird_cfg)
-        elif 'MeanL65' in global_model_type:
+        elif 'MeanL65' == global_model_type:
             self.self_attn = MeanModel(d_model=dim_h, # Model dimension d_model
                         expand=2,    # Block expansion factor
                     )
@@ -392,6 +585,23 @@ class GPSLayer(nn.Module):
                     expand=1,    # Block expansion factor
                 )
             self.subgraph_encoder = SubgraphEncoder(dim_h + dim_h, dim_h) # TODO(guillem): assuming the number of edge features is the same as the number of node features
+        elif 'ConvL65' in global_model_type:
+            kernel_size = int(global_model_type.split('_')[-1])
+            self.self_attn = ConvModel(d_model=dim_h, # Model dimension d_model
+                        expand=2,    # Block expansion factor
+                        kernel_size=kernel_size
+                    )
+        elif 'GraphSSML65' in global_model_type:
+            self.self_attn = GraphSSM(d_model=dim_h, # Model dimension d_model
+                d_state=16,  # SSM state expansion factor
+                expand=1,    # Block expansion factor
+            )
+        elif 'SharedMambaL65' in global_model_type:
+            self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
+                d_state=16,  # SSM state expansion factor
+                d_conv=4,    # Local convolution width
+                expand=1,    # Block expansion factor
+            )
         elif 'MambaL65' in global_model_type:
             num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
             self.self_attn = torch.nn.ModuleList()
@@ -511,7 +721,7 @@ class GPSLayer(nn.Module):
 
         # Multi-head attention.
         if self.self_attn is not None:
-            if self.global_model_type in ['Transformer', 'Performer', 'BigBird', 'Mamba', 'MeanL65']:
+            if self.global_model_type in ['Transformer', 'Performer', 'BigBird', 'Mamba', 'MeanL65', 'ConvL65', 'GraphSSML65']:
                 h_dense, mask = to_dense_batch(h, batch.batch)
             if self.global_model_type == 'Transformer':
                 h_attn = self._sa_block(h_dense, None, ~mask)[mask]
@@ -648,8 +858,97 @@ class GPSLayer(nn.Module):
 
                 h_attn = sum(mamba_arr) / len(mamba_arr)
             
+            elif self.global_model_type == 'SharedMambaL65':
+                # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
+                # (and also our new code)
+
+                # NOTE(guillem): naming conventions of graph-mamba's global_mode_type:
+                #   permute = hybrid with 5 replaced by 1 for averaging during inference:
+                #       basically they randomly permute the orders before applying any heuristic
+                #   multi (doesn't seem to be used):
+                #       different mamba layers running in parallel
+                #   noise:
+                #       adds noise to the heuristics
+                #   bucket:
+                #       colors each node randomly and runs mamba for the sequences of nodes in each color
+                #   cluster:
+                #       similar to bucket but instead of random colors, it permutes nodes within a cluster
+                #   degree, eigen, RWSE:
+                #       different heuristics that are used
+
+                permute_iterations = self.mamba_permute_iterations
+                if batch.split == 'train':
+                    permute_iterations = 1
+                noise = self.mamba_noise
+                buckets_num = self.mamba_buckets_num
+
+                heuristics = self.mamba_heuristics
+                heuristic_values = sum((heuristic_fns[h][0](batch) for h in heuristics), [])
+                heuristic_noise_maginitudes = [noise*torch.std(h) for h in heuristic_values]
+                mamba_arr = []
+                for _ in range(max(permute_iterations, 1)):
+                    for j, heuristic_ in enumerate(heuristic_values):
+                        if noise > 0.0:
+                            heuristic_noise = heuristic_noise_maginitudes[j]*torch.randn_like(heuristic_).to(heuristic_.device)
+                            heuristic = heuristic_ + heuristic_noise
+                        else:
+                            heuristic = heuristic_
+                        
+                        if buckets_num > 1:
+                            indices_arr, emb_arr = [], []
+                            bucket_assign = torch.randint_like(heuristic, 0, self.NUM_BUCKETS).to(heuristic.device)
+                            for i in range(buckets_num):
+                                ind_i = (bucket_assign==i).nonzero().squeeze()
+                                h_ind_perm_sort = lexsort([heuristic[ind_i], batch.batch[ind_i]])
+                                h_ind_perm_i = ind_i[h_ind_perm_sort]
+                                h_dense, mask = to_dense_batch(h[h_ind_perm_i], batch.batch[h_ind_perm_i])
+                                h_dense = self.self_attn(h_dense)[mask]
+                                indices_arr.append(h_ind_perm_i)
+                                emb_arr.append(h_dense)
+                            h_ind_perm_reverse = torch.argsort(torch.cat(indices_arr))
+                            h_attn = torch.cat(emb_arr)[h_ind_perm_reverse]
+
+                        elif permute_iterations > 1:
+                            h_ind_perm = permute_within_batch(batch.batch)
+                            h_ind_perm_1 = lexsort([heuristic[h_ind_perm], batch.batch[h_ind_perm]])
+                            h_ind_perm = h_ind_perm[h_ind_perm_1]
+                            h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
+                            h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                            h_attn = self.self_attn(h_dense)[mask][h_ind_perm_reverse]
+
+                        else:
+                            h_ind_perm = lexsort([heuristic, batch.batch])
+                            h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
+                            h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                            h_attn = self.self_attn(h_dense)[mask][h_ind_perm_reverse]
+
+                        mamba_arr.append(h_attn)
+
+                h_attn = sum(mamba_arr) / len(mamba_arr)
+            
             elif self.global_model_type == 'MeanL65':
-                h_attn = self.self_attn(h_dense, mask)[mask]    
+                h_attn = self.self_attn(h_dense, mask)[mask]  
+            elif 'ConvL65' in self.global_model_type:
+
+                permute_iterations = self.mamba_permute_iterations
+                if batch.split == 'train':
+                    permute_iterations = 1
+
+                mamba_arr = []
+                for _ in range(max(permute_iterations, 1)):
+                    h_ind_perm = permute_within_batch(batch.batch)
+                    h_dense, mask = to_dense_batch(h[h_ind_perm], batch.batch[h_ind_perm])
+                    h_ind_perm_reverse = torch.argsort(h_ind_perm)
+                    h_attn = self.self_attn(h_dense, mask)[mask][h_ind_perm_reverse]
+
+                    mamba_arr.append(h_attn)
+
+                h_attn = sum(mamba_arr) / len(mamba_arr)  
+            
+            elif self.global_model_type == 'GraphSSML65':
+                EigVecs_dense, _ = to_dense_batch(batch.EigVecs, batch.batch)
+                EigVals_dense, _ = to_dense_batch(batch.EigVals.squeeze(-1), batch.batch)
+                h_attn = self.self_attn(h_dense, mask, EigVecs_dense, EigVals_dense[:,0,:])[mask]  
             
             elif self.global_model_type == 'Mamba':
                 h_attn = self.self_attn(h_dense)[mask]                
