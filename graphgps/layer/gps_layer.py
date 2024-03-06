@@ -578,6 +578,12 @@ class GPSLayer(nn.Module):
             self.self_attn = MeanModel(d_model=dim_h, # Model dimension d_model
                         expand=2,    # Block expansion factor
                     )
+        elif 'MultiMambaL65' in global_model_type:
+            self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,    # Local convolution width
+                    expand=1,    # Block expansion factor
+                )
         elif 'Subgraph_Mamba_L65' in global_model_type:
             self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
                     d_state=16,  # SSM state expansion factor
@@ -731,6 +737,33 @@ class GPSLayer(nn.Module):
                 h_attn = self.self_attn(h_dense, attention_mask=mask)
 
 
+            elif 'MultiMambaL65' in self.global_model_type:
+                repeats = int(self.global_model_type.split("_")[-1])
+                num_nodes = batch.x.shape[0]
+                heuristic = heuristic_fns[self.mamba_heuristics[0]][0](batch)[0]
+
+                encodings_sequence = torch.repeat_interleave(h, repeats, dim=0)
+                # Copy heuristics where the first repeat has the right sign, the second is negated, and so on
+                heuristics_sequence = torch.repeat_interleave(heuristic, repeats, dim=0)
+                for i in range(1, repeats, 2):
+                    heuristics_sequence[i::repeats] = -heuristics_sequence[i::repeats]
+                batches_sequence = torch.repeat_interleave(batch.batch, repeats, dim=0)
+                subgraph_indices_sequence = torch.arange(repeats, device=encodings_sequence.device).repeat(num_nodes)
+                node_indices = (repeats-1) + repeats*torch.arange(num_nodes, device=encodings_sequence.device)
+
+                # Reorder the sequence according to the heuristics and the index of the subgraph or whether it is a node
+                h_ind_perm = lexsort([heuristics_sequence, subgraph_indices_sequence, batches_sequence])
+                h_dense, mask = to_dense_batch(encodings_sequence[h_ind_perm], batches_sequence[h_ind_perm])
+                h_ind_perm_reverse = torch.argsort(h_ind_perm)
+
+                # Run mamba to compute the final embeddings for subgraphs and nodes
+                final_embeddings = self.self_attn(h_dense)[mask]
+
+                # Get the indices of the n-th node in the final embedding sequence and get the corresponding embedding
+                node_indices_in_reordered_sequence_reverse = h_ind_perm_reverse[node_indices]
+                h_attn = final_embeddings[node_indices_in_reordered_sequence_reverse]
+
+
             elif self.global_model_type == 'Subgraph_Mamba_L65':
                 print('Lets go')
                 degrees = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
@@ -859,22 +892,6 @@ class GPSLayer(nn.Module):
                 h_attn = sum(mamba_arr) / len(mamba_arr)
             
             elif self.global_model_type == 'SharedMambaL65':
-                # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
-                # (and also our new code)
-
-                # NOTE(guillem): naming conventions of graph-mamba's global_mode_type:
-                #   permute = hybrid with 5 replaced by 1 for averaging during inference:
-                #       basically they randomly permute the orders before applying any heuristic
-                #   multi (doesn't seem to be used):
-                #       different mamba layers running in parallel
-                #   noise:
-                #       adds noise to the heuristics
-                #   bucket:
-                #       colors each node randomly and runs mamba for the sequences of nodes in each color
-                #   cluster:
-                #       similar to bucket but instead of random colors, it permutes nodes within a cluster
-                #   degree, eigen, RWSE:
-                #       different heuristics that are used
 
                 permute_iterations = self.mamba_permute_iterations
                 if batch.split == 'train':
