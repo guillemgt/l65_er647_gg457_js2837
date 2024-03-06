@@ -22,6 +22,76 @@ import numpy as np
 import torch
 from torch import Tensor
 
+def simulate_random_walk(edge_index, start_node, walk_length, include_visited=True):
+    """
+    Simulate a random walk on the graph starting from the given node without revisiting nodes.
+    
+    Parameters:
+        edge_index (torch.Tensor): The edge index of the graph.
+        start_node (int): The starting node for the random walk.
+        walk_length (int): The length of the random walk.
+    
+    Returns:
+        list: The random walk path as a list of node indices. If possible, the walk ends on start_node.
+    """
+    num_nodes = edge_index.max().item() + 1
+    adjacency_list = [[] for _ in range(num_nodes)]
+    for i in range(edge_index.shape[1]):
+        src, dest = edge_index[:, i].tolist()
+        adjacency_list[src].append(dest)
+        adjacency_list[dest].append(src)  # Assuming undirected graph
+    
+    visited = set([start_node])
+    walk = [start_node]
+    current_node = start_node
+
+    for _ in range(walk_length - 1):
+        if include_visited:
+            neighbors = adjacency_list[current_node]
+        else:
+            neighbors = [neighbor for neighbor in adjacency_list[current_node] if neighbor not in visited]
+        if not neighbors:  
+                break
+        next_node = random.choice(neighbors)
+        walk.append(next_node)
+        visited.add(next_node)
+        current_node = next_node
+
+    walk.reverse()
+    return walk
+
+
+def construct_subgraph_from_walk(data, walk):
+    """
+    Construct a subgraph from the given walk on the graph.
+    
+    Args:
+        data (Data): The original graph data object.
+        walk (list): The list of nodes visited during the walk.
+        
+    Returns:
+        Data: The subgraph data object containing the extracted subgraph.
+    """
+    # Create edge_index for the subgraph from the walk
+    nodes_visited = list(set(walk))  # Unique nodes visited during the walk
+    node_to_idx = {node: idx for idx, node in enumerate(nodes_visited)}  # Mapping to new indices
+    
+    edge_index_sub = []
+    for i in range(1, len(walk)):
+        src, dest = walk[i-1], walk[i]
+        edge_index_sub.append([node_to_idx[src], node_to_idx[dest]])
+    
+    edge_index_sub = torch.tensor(edge_index_sub).t().contiguous()
+    
+    # Extract features for nodes in the subgraph, if available
+    if data.x is not None:
+        x_sub = data.x[nodes_visited]
+    else:
+        x_sub = None
+    
+    # Create subgraph data object
+    sub_data = Data(x=x_sub, edge_index=edge_index_sub)
+    return sub_data
 
 def permute_nodes_within_identity(identities):
     unique_identities, inverse_indices = torch.unique(identities, return_inverse=True)
@@ -333,13 +403,13 @@ class GPSLayer(nn.Module):
             self.self_attn = MeanModel(d_model=dim_h, # Model dimension d_model
                         expand=2,    # Block expansion factor
                     )
-        elif 'Subgraph_Mamba_L65' in self.global_model_type:
+        elif global_model_type == 'Subgraph_Mamba_L65':
             self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
                     d_state=16,  # SSM state expansion factor
                     d_conv=4,    # Local convolution width
                     expand=1,    # Block expansion factor
                 )
-        elif 'RandomWalk_Mamba_L65' in self.global_model_type:
+        elif global_model_type == 'RandomWalk_Mamba_L65':
             # Initialize the Mamba model for self.self_attn
             self.self_attn = Mamba(d_model=dim_h,  # Input dimension
                                 d_state=16,     # State dimension (adjust as needed)
@@ -347,11 +417,11 @@ class GPSLayer(nn.Module):
                                 expand=1)       # Expansion factor (adjust as needed)
 
             # Initialize the MLP with one hidden layer
-            expand_factor = 2  # Adjust the expansion factor as needed
+            num_walks = 5  # Adjust the expansion factor as needed
             self.mlp = nn.Sequential(
-                nn.Linear(dim_h, dim_h * expand_factor),  # Input to hidden layer
+                nn.Linear(dim_h * num_walks, dim_h * num_walks),  # Input to hidden layer
                 nn.ReLU(),                                # Activation function
-                nn.Linear(dim_h * expand_factor, dim_h)   # Hidden layer to output
+                nn.Linear(dim_h * num_walks, dim_h)   # Hidden layer to output
             )
         elif 'MambaL65' in global_model_type:
             num_models = max(1, sum((heuristic_fns[h][1] for h in mamba_heuristics)))
@@ -481,36 +551,114 @@ class GPSLayer(nn.Module):
             elif self.global_model_type == 'BigBird':
                 h_attn = self.self_attn(h_dense, attention_mask=mask)
 
-            elif self.global_model_type == 'RandomWalk_Mamba_L65':
-                num_walks = ... # TODO (evan) Define the number of walks per node (num_walk)
-                walk_length = ... # TODO (evan) Define the length of each walk (walk_len)
-                walks_embeddings = []
+            elif self.global_model_type == 'RandomWalk_Mamba_L65': # TODO (evan) is this for graph classification or node classification or both?
+                def insert_at_batch(batch_sequences, sequence, index):
+                    while len(batch_sequences) < index:
+                        batch_sequences.append([])
+                    batch_sequences[index].extend(sequence)
+                    return batch_sequences
+                
+                num_walks = 5 # R TODO (evan) Define the number of walks per node (num_walk)
+                walk_length = 5 # S TODO (evan) Define the length of each walk (walk_len)
+                
+                B,R,S,F = batch.x.size(0), num_walks, walk_length, self.dim_h
+                
+                fake_node_idx = batch.x.size(0) # The index of the fake node
+                
+                batch_sequences = []
+                real_nodes_mask = []
+                node_indices = []
+                
                 for node_idx in range(batch.x.size(0)):  # Loop over each node in the batch
-                    node_walks_embeddings = []
+                    
+                    node_walks_embeddings = [] # list of walked nodes for this node
+                    node_walks_indices = [] # list of walked node indices for this node
+                    real_nodes_mask_idx = [] # mask for real nodes in the walk
+                    
+                    node_walks_embeddings.append(torch.zeros(self.dim_h), device=batch.x.device) # Add a walk start token as the first element of the walk to make walk of shape (1+S)xF
+                    node_walks_indices.append(fake_node_idx)
+                    real_nodes_mask_idx.append(False)
+                    
                     for _ in range(num_walks):
-                        # Perform a random walk for the current node
-                        walk_nodes = [node_idx]
-                        current_node = node_idx
-                        for _ in range(walk_length - 1):
-                            neighbors = edge_index[1][edge_index[0] == current_node]
-                            if len(neighbors) > 0:
-                                current_node = neighbors[random.randint(0, len(neighbors) - 1)].item()
-                                walk_nodes.append(current_node)
-                            else:
-                                break
-                        walk_nodes.reverse()  # Reverse the list to start with the initial node
-                        # Create embeddings using Mamba for the node-edge states (you need to define how to extract these states)
-                        # For simplicity, assuming `mamba_model` is an instance of the Mamba model you want to use
-                        node_edge_states = ... # TODO (evan) Extract or construct node-edge states from walk_nodes
-                        walk_embedding = self.self_attn(node_edge_states)  # Assuming self.self_attn is a Mamba model here
-                        node_walks_embeddings.append(walk_embedding)
-                    # Concatenate all walk embeddings for the current node and append to the walks_embeddings list
-                    walks_embeddings.append(torch.cat(node_walks_embeddings, dim=0))
-                # Concatenate embeddings from all nodes to form a batch-wide embedding tensor
-                batch_embedding = torch.cat(walks_embeddings, dim=0)
-                # Process the batch_embedding through an MLP as specified
-                mlp_output = self.mlp(batch_embedding)
-                h_attn = mlp_output
+                        walk = simulate_random_walk(edge_index=batch.edge_index, start_node=node_idx, walk_length=walk_length) # list of node indices of length S
+                        walk_embedding = batch.x[walk] # SxF tensor
+                        
+                        node_walks_embeddings.append(walk_embedding) # R-length list of (1+S)xF tensors
+                        node_walks_indices.extend(walk) # R*(1+S) list of walked indices for this node
+                        real_nodes_mask_idx.extend([True]*len(walk)) # R*(1+S) mask list for real nodes in the walk
+                        
+                    node_walks_embeddings = torch.stack(node_walks_embeddings) # Rx(1+S)xF
+                    node_walks_embeddings = node_walks_embeddings.view(R*(1+S),F) # Rx(1+S)xF -> R*(1+S)xF
+                    
+                    batch_sequences = insert_at_batch(batch_sequences, node_walks_embeddings, batch.batch[node_idx]) # num_graphs x R*(1+S)*n_b x F where n_b is the number of nodes in this graph
+                    real_nodes_mask = insert_at_batch(real_nodes_mask, real_nodes_mask_idx, batch.batch[node_idx])# num_graphs x R*(1+S)*n_b
+                    node_indices    = insert_at_batch(node_indices, node_walks_indices, batch.batch[node_idx]) # num_graphs x R*(1+S)*n_b 
+                    
+                num_graphs = len(batch_sequences)
+                
+                # =================== Pad and convert to tensor for Mamba ===================
+                # initially batch_sequence is a list of lists of tensors of shape num_graphs x R*(1+S)*n_b x F
+                # batch_sequences will be a tensor of shape num_graphs x max_sequence_length x F
+                # where max_sequence_length = max_b(R*(1+S)*n_b for all b in num_graphs)
+                # pads the batch_sequences with zero tensors to the maximum sequence length
+                # pads the real_nodes_mask with False to the maximum sequence length
+                # pads the node_walks_indices with fake_node_idx to the maximum sequence length
+                max_sequence_length = max(len(batch_sequence) for batch_sequence in batch_sequences)
+                def pad_batch_sequence(batch_sequence, real_nodes_mask_b, node_walks_indices_b, max_sequence_length, F):
+                    """
+                    Pads a batch sequence with zero tensors to the maximum sequence length.
+                    Pads the real_nodes_mask_b with False to the maximum sequence length.
+                    Pads the node_walks_indices_b with fake_node_idx to the maximum sequence length.
+                    """
+                    padding = max_sequence_length - len(batch_sequence)
+                    if padding > 0:
+                        pad_tensors = [torch.zeros(F, device=batch.x.device) for _ in range(padding)]
+                        batch_sequence.extend(pad_tensors)
+                        real_nodes_mask_b.extend([False]*padding)
+                        node_walks_indices_b.extend([fake_node_idx]*padding)
+                    return batch_sequence, real_nodes_mask_b, node_walks_indices_b
+                for b in range(num_graphs):
+                    batch_sequences[b], real_nodes_mask[b], node_walks_indices[b] = pad_batch_sequence(batch_sequences[b], real_nodes_mask[b], max_sequence_length, self.dim_h)
+                batch_sequences = torch.stack([torch.stack(batch_sequence) for batch_sequence in batch_sequences]) # num_graphs x max_sequence_length x F converted to tensor
+                
+                # =================== Mamba ===================
+                # num_graphs x max_sequence_length x F -> num_graphs x max_sequence_length x F
+                mamba_output = self.self_attn(batch_sequences) 
+                
+                # =================== Average Mamba by node ===================
+                # num_graphs x max_sequence_length x F -> num_graphs x n_b x F
+                averaged_features_list = []
+                unique_node_indices_list = []
+                for b in range(num_graphs):
+                    real_nodes_batch = real_nodes_mask[b]
+                    features_batch = mamba_output[b][real_nodes_batch]
+                    node_indices_batch = node_indices[b][real_nodes_batch]
+
+                    unique_nodes = torch.unique(node_indices_batch)
+                    averaged_features_batch = torch.zeros((len(unique_nodes), self.dim_h), dtype=mamba_output.dtype, device=mamba_output.device)
+
+                    for i, node in enumerate(unique_nodes):
+                        mask = (node_indices_batch == node)
+                        averaged_features_batch[i] = features_batch[mask].mean(dim=0)
+
+                    averaged_features_list.append(averaged_features_batch)
+                    unique_node_indices_list.append(unique_nodes)
+                    
+                # =================== Reshape output to be BxF ===================
+                # num_graphs x n_b x F -> BxF
+                flat_features = [tensor for sublist in averaged_features_list for tensor in sublist]
+                flat_indices = [index for sublist in unique_node_indices_list for index in sublist]
+                
+                # Convert flat_features into a single tensor
+                flat_features_tensor = torch.cat([tensor.unsqueeze(0) for tensor in flat_features], dim=0)
+                
+                # Get sorted indices based on flat_indices
+                sorted_indices = torch.argsort(torch.tensor(flat_indices, device=batch.x.device))
+                
+                # Reorder flat_features_tensor based on sorted indices
+                h_attn = flat_features_tensor[sorted_indices]
+        
+        
             elif self.global_model_type == 'Subgraph_Mamba_L65':
                 degrees = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
                 max_degree = torch.max(degrees)
