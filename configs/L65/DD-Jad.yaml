@@ -1,24 +1,26 @@
 out_dir: results
-metric_best: ap
+metric_best: f1
+num_workers: 4
 wandb:
-  use: True
-  project: peptides_subgraph
-  entity: l65
+  use: False
+  project: LRGB-Benchmark-RandomSeed
+  entity: project
 dataset:
-  format: OGB
-  name: peptides-functional
+  format: PyG-TUDataset
+  name: DD
   task: graph
-  task_type: classification_multilabel
+  task_type: classification
+  resample_negative: True
   transductive: False
-  node_encoder: True
-  node_encoder_name: Atom+LapPE
+  node_encoder: False
+  node_encoder_name: Integer
   node_encoder_bn: False
-  edge_encoder: True
+  edge_encoder: False
   edge_encoder_name: Bond
   edge_encoder_bn: False
-  split_mode: standard
+  split_mode: cv-stratifiedkfold-3
 posenc_LapPE:
-  enable: True
+  enable: False
   eigen:
     laplacian_norm: none
     eigvec_norm: L2
@@ -39,19 +41,16 @@ model:
 gt:
   layer_type: CustomGatedGCN+Subgraph_Mamba_L65
   n_heads: 4
-  dim_hidden: 96  # `gt.dim_hidden` must match `gnn.dim_inner`
+  dim_hidden: 89  # `gt.dim_hidden` must match `gnn.dim_inner`
   dropout: 0.5
   attn_dropout: 0.4
   layer_norm: False
   batch_norm: True
-  mamba_heuristics: global_pe_1
-  mamba_permute_iterations: 3
-  mamba_noise: 0.00
 gnn:
   head: default
   layers_pre_mp: 0
   layers_post_mp: 1  # Not used when `gnn.head: san_graph`
-  dim_inner: 96  # `gt.dim_hidden` must match `gnn.dim_inner`
+  dim_inner: 89  # `gt.dim_hidden` must match `gnn.dim_inner`
   batchnorm: True
   act: relu
   dropout: 0.0
