@@ -18,6 +18,8 @@ from mamba_ssm import Mamba
 from typing import List
 import random
 import time
+import math
+
 import numpy as np
 import torch
 from torch import Tensor
@@ -223,6 +225,7 @@ class MeanModel(nn.Module):
             nn.BatchNorm1d(d_model),
             nn.Linear(d_model, expand*d_model),
             nn.ReLU(),
+            # nn.BatchNorm1d(expand*d_model),
             nn.Linear(expand*d_model, d_model)
         )
 
@@ -234,8 +237,8 @@ class MeanModel(nn.Module):
         x = self.mlp(x)
         x = x.reshape(x_shape)
 
-        x = ((x.sum(dim=-2, keepdim=True) / mask.sum(dim=-2, keepdim=True))*mask)
-        x = x.expand(x.shape)
+        x = (x*mask).sum(dim=-2, keepdim=True) / mask.sum(dim=-2, keepdim=True)
+        x = x.expand(x_shape)
         return x
     
 class ConvModel(nn.Module):
@@ -270,6 +273,9 @@ class GraphSSM(nn.Module):
                  d_model, # D in Mamba paper
                  d_state, # N in Mamba paper
                  expand, # E in Mamba paper
+                 A_complex=True,
+                 BC_complex=False,
+                 epsilon=0.001,
                  ):
         super().__init__()
         self.d_state = d_state
@@ -277,14 +283,30 @@ class GraphSSM(nn.Module):
 
         d_inner = expand*d_model # Number of channels in the SSM
         self.d_inner = d_inner
-        self.in_proj = nn.Linear(d_model, 2*d_inner)
-        self.B = nn.Parameter(torch.rand(1, d_inner, d_state))
-        self.C = nn.Parameter(torch.rand(1, d_inner, d_state))
-        self.Delta = nn.Parameter(torch.rand(1, d_inner))
-        # self.A_log = nn.Parameter(torch.complex(torch.rand(1, d_inner, d_state), 1.0-2.0*torch.rand(1, d_inner, d_state)))
-        self.A_log = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.in_proj = nn.Sequential(
+            nn.BatchNorm1d(d_model),
+            nn.Linear(d_model, 2*d_inner),
+        )
+        Delta_min = 0.001
+        Delta_max = 0.1
+        self.log_Delta = nn.Parameter(math.log(Delta_min) + (math.log(Delta_max)-math.log(Delta_min))*torch.rand(1, d_inner))
+        self.A_complex = A_complex
+        self.BC_complex = BC_complex
+        if BC_complex:
+            self.B = nn.Parameter(0.01*torch.complex(torch.randn(1, d_inner, d_state), torch.randn(1, d_inner, d_state)))
+            self.C = nn.Parameter(0.01*torch.complex(torch.randn(1, d_inner, d_state), torch.randn(1, d_inner, d_state)))
+        else:
+            self.B = nn.Parameter(0.01*torch.randn(1, d_inner, d_state))
+            self.C = nn.Parameter(0.01*torch.randn(1, d_inner, d_state))
+        if A_complex:
+            self.log_A_real = nn.Parameter(torch.log(0.5 * torch.ones(d_model, d_state)))
+            self.A_imag = nn.Parameter(torch.pi * torch.arange(d_model).expand(d_state, d_model).T)
+        else:
+            self.log_A = nn.Parameter(torch.rand(1, d_inner, d_state))
         self.out_proj = nn.Linear(d_inner, d_model)
 
+        self.Abar_epsilon = epsilon
+ 
     def _change_basis(self, Q, X):
         # Q: (B, L', L)
         # X: (B, L, ED, N)
@@ -301,46 +323,64 @@ class GraphSSM(nn.Module):
         # EigVals: (B, L')
         EigVals = EigVals.view(*EigVals.shape, 1, 1) # Eigenvalues of L = 1-M
         EigVals = 1.0 - EigVals # Eigenvalues of M = 1-L
+        
+        EigVals = torch.nan_to_num(EigVals, nan=0.0)
+        EigVecs = torch.nan_to_num(EigVecs, nan=0.0)
+        EigVecs = EigVecs / EigVecs.norm(dim=-1, keepdim=True)
+        EigVecs = torch.nan_to_num(EigVecs, nan=0.0)
+
+        if self.BC_complex:
+            EigVecs = torch.complex(EigVecs, torch.zeros_like(EigVecs))
+        
+        # print(x.norm(dim=-1).max().item(), x.norm(dim=-1).min().item())
 
         # Gated MLP
-        x = self.in_proj(x) # (B, L, 2*ED)
+        B, L, D = x.shape
+        x = x.reshape(B*L, D)
+        x = self.in_proj(x).reshape(B, L, 2*self.d_inner) # (B, L, 2*ED)
         x, z = torch.split(x, [self.d_model, self.d_model], dim=-1) # (B, L, ED), (B, L, ED)
         x = x*F.silu(z) # (B, L, ED)
 
         # Selective parameters
         B = self.B # (1, ED, N)
         C = self.C # (1, ED, N)
-        delta = F.softplus(self.Delta) # (1, ED)
-        A = -torch.exp(self.A_log) # (1, ED, N)
+        delta = torch.exp(self.log_Delta) # (1, ED)
+        if self.A_complex:
+            A = -torch.exp(self.log_A_real) + 1j * self.A_imag # (H N)
+        else:
+            A = -torch.exp(self.log_A) # (1, ED, N)
         
         # Discretisation
         deltaA = delta.unsqueeze(-1) * A # (1, ED, N)
-        Abar = torch.exp(deltaA) # (1, ED, N)
+        Abar = torch.exp(-self.Abar_epsilon + deltaA) # (1, ED, N) # epsilon so that Abar is not too close to 1 (which happens in practice)
         deltaB = delta.unsqueeze(-1) * B # (1, ED, N)
         Bbar = deltaB # (1, ED, N)
 
-        XB = (x.unsqueeze(-1) * Bbar) # (B, L, ED, N)
+        X = x.unsqueeze(-1) # (B, L, ED, 1)
 
-        # # # Propagate along graph
-        QTXB = self._change_basis(EigVecs.permute(0,2,1), XB) # (B, L', ED, N)
-        # lambdaQTXBA = QTXB
+        # Propagate along graph
+
+        # XB = (X * Bbar) # (B, L, ED, N)
+        # QTXB = self._change_basis(EigVecs.permute(0,2,1), XB) # (B, L', ED, N)
+        QTX = self._change_basis(EigVecs.permute(0,2,1), X) # (B, L', ED, 1)
+        QTXB = (QTX * Bbar) # (B, L', ED, N)
+
         lambdaA = EigVals*Abar.unsqueeze(1)
         lambdaQTXBA = (lambdaA / (1.0 - lambdaA)) * QTXB # (B, L', ED, N)
+        if self.A_complex and not self.BC_complex:
+            lambdaQTXBA = lambdaQTXBA.real
         MXBA = self._change_basis(EigVecs, lambdaQTXBA) # (B, L, ED, N)
-        MXBA = XB + MXBA
-        # MXBA = XB
 
         # Project back to original space
         MXBAC = (MXBA * C.unsqueeze(0)).sum(dim=-1) #(B, L, ED)
-        # MXBAC = MXBAC.real
+        if self.BC_complex:
+            MXBAC = MXBAC.real
 
-        # Residual connection
-        y = x + MXBAC # (B, L, ED)
+        y = MXBAC # (B, L, ED)
 
         # Output projection
         y = F.silu(y) # (B, L, ED)
         y = self.out_proj(y) # (B, L, D)
-        print(y.shape)
         return y
     
 
@@ -518,6 +558,12 @@ class GPSLayer(nn.Module):
             self.self_attn = MeanModel(d_model=dim_h, # Model dimension d_model
                         expand=2,    # Block expansion factor
                     )
+        elif 'MultiMambaL65' in global_model_type:
+            self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,    # Local convolution width
+                    expand=1,    # Block expansion factor
+                )
         elif 'Subgraph_Mamba_L65' in global_model_type:
             self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
                     d_state=16,  # SSM state expansion factor
@@ -674,6 +720,33 @@ class GPSLayer(nn.Module):
                 h_attn = self.self_attn(h_dense, attention_mask=mask)
 
 
+            elif 'MultiMambaL65' in self.global_model_type:
+                repeats = int(self.global_model_type.split("_")[-1])
+                num_nodes = batch.x.shape[0]
+                heuristic = heuristic_fns[self.mamba_heuristics[0]][0](batch)[0]
+
+                encodings_sequence = torch.repeat_interleave(h, repeats, dim=0)
+                # Copy heuristics where the first repeat has the right sign, the second is negated, and so on
+                heuristics_sequence = torch.repeat_interleave(heuristic, repeats, dim=0)
+                for i in range(1, repeats, 2):
+                    heuristics_sequence[i::repeats] = -heuristics_sequence[i::repeats]
+                batches_sequence = torch.repeat_interleave(batch.batch, repeats, dim=0)
+                subgraph_indices_sequence = torch.arange(repeats, device=encodings_sequence.device).repeat(num_nodes)
+                node_indices = (repeats-1) + repeats*torch.arange(num_nodes, device=encodings_sequence.device)
+
+                # Reorder the sequence according to the heuristics and the index of the subgraph or whether it is a node
+                h_ind_perm = lexsort([heuristics_sequence, subgraph_indices_sequence, batches_sequence])
+                h_dense, mask = to_dense_batch(encodings_sequence[h_ind_perm], batches_sequence[h_ind_perm])
+                h_ind_perm_reverse = torch.argsort(h_ind_perm)
+
+                # Run mamba to compute the final embeddings for subgraphs and nodes
+                final_embeddings = self.self_attn(h_dense)[mask]
+
+                # Get the indices of the n-th node in the final embedding sequence and get the corresponding embedding
+                node_indices_in_reordered_sequence_reverse = h_ind_perm_reverse[node_indices]
+                h_attn = final_embeddings[node_indices_in_reordered_sequence_reverse]
+
+
             elif self.global_model_type == 'Subgraph_Mamba_L65':
                 # print('Lets go')
                 degrees = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
@@ -689,8 +762,8 @@ class GPSLayer(nn.Module):
                 # Unique graphs in the batch
                 unique_graphs = torch.unique(batch.batch)
                 sampled_node_indices = []
-                num_samples_per_graph = 2
-                num_strata = 2
+                num_samples_per_graph = 3
+                num_strata = 3
                 device = batch.batch.device
 
                 start_time = time.time()
@@ -864,22 +937,6 @@ class GPSLayer(nn.Module):
                 h_attn = sum(mamba_arr) / len(mamba_arr)
             
             elif self.global_model_type == 'SharedMambaL65':
-                # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
-                # (and also our new code)
-
-                # NOTE(guillem): naming conventions of graph-mamba's global_mode_type:
-                #   permute = hybrid with 5 replaced by 1 for averaging during inference:
-                #       basically they randomly permute the orders before applying any heuristic
-                #   multi (doesn't seem to be used):
-                #       different mamba layers running in parallel
-                #   noise:
-                #       adds noise to the heuristics
-                #   bucket:
-                #       colors each node randomly and runs mamba for the sequences of nodes in each color
-                #   cluster:
-                #       similar to bucket but instead of random colors, it permutes nodes within a cluster
-                #   degree, eigen, RWSE:
-                #       different heuristics that are used
 
                 permute_iterations = self.mamba_permute_iterations
                 if batch.split == 'train':
