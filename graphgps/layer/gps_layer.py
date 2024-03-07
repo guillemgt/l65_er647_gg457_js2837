@@ -719,8 +719,8 @@ class GPSLayer(nn.Module):
                 # Unique graphs in the batch
                 unique_graphs = torch.unique(batch.batch)
                 sampled_node_indices = []
-                num_samples_per_graph = 5
-                num_strata = 5
+                num_samples_per_graph = 3
+                num_strata = 3
                 device = batch.batch.device
 
                 start_time = time.time()
