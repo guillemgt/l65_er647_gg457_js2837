@@ -17,6 +17,7 @@ from graphgps.layer.bigbird_layer import SingleBigBirdLayer
 from mamba_ssm import Mamba
 from typing import List
 import random
+import math
 
 import numpy as np
 import torch
@@ -283,6 +284,7 @@ class MeanModel(nn.Module):
             nn.BatchNorm1d(d_model),
             nn.Linear(d_model, expand*d_model),
             nn.ReLU(),
+            # nn.BatchNorm1d(expand*d_model),
             nn.Linear(expand*d_model, d_model)
         )
 
@@ -294,8 +296,8 @@ class MeanModel(nn.Module):
         x = self.mlp(x)
         x = x.reshape(x_shape)
 
-        x = ((x.sum(dim=-2, keepdim=True) / mask.sum(dim=-2, keepdim=True))*mask)
-        x = x.expand(x.shape)
+        x = (x*mask).sum(dim=-2, keepdim=True) / mask.sum(dim=-2, keepdim=True)
+        x = x.expand(x_shape)
         return x
     
 class ConvModel(nn.Module):
@@ -330,6 +332,9 @@ class GraphSSM(nn.Module):
                  d_model, # D in Mamba paper
                  d_state, # N in Mamba paper
                  expand, # E in Mamba paper
+                 A_complex=True,
+                 BC_complex=False,
+                 epsilon=0.001,
                  ):
         super().__init__()
         self.d_state = d_state
@@ -337,14 +342,30 @@ class GraphSSM(nn.Module):
 
         d_inner = expand*d_model # Number of channels in the SSM
         self.d_inner = d_inner
-        self.in_proj = nn.Linear(d_model, 2*d_inner)
-        self.B = nn.Parameter(torch.rand(1, d_inner, d_state))
-        self.C = nn.Parameter(torch.rand(1, d_inner, d_state))
-        self.Delta = nn.Parameter(torch.rand(1, d_inner))
-        # self.A_log = nn.Parameter(torch.complex(torch.rand(1, d_inner, d_state), 1.0-2.0*torch.rand(1, d_inner, d_state)))
-        self.A_log = nn.Parameter(torch.rand(1, d_inner, d_state))
+        self.in_proj = nn.Sequential(
+            nn.BatchNorm1d(d_model),
+            nn.Linear(d_model, 2*d_inner),
+        )
+        Delta_min = 0.001
+        Delta_max = 0.1
+        self.log_Delta = nn.Parameter(math.log(Delta_min) + (math.log(Delta_max)-math.log(Delta_min))*torch.rand(1, d_inner))
+        self.A_complex = A_complex
+        self.BC_complex = BC_complex
+        if BC_complex:
+            self.B = nn.Parameter(0.01*torch.complex(torch.randn(1, d_inner, d_state), torch.randn(1, d_inner, d_state)))
+            self.C = nn.Parameter(0.01*torch.complex(torch.randn(1, d_inner, d_state), torch.randn(1, d_inner, d_state)))
+        else:
+            self.B = nn.Parameter(0.01*torch.randn(1, d_inner, d_state))
+            self.C = nn.Parameter(0.01*torch.randn(1, d_inner, d_state))
+        if A_complex:
+            self.log_A_real = nn.Parameter(torch.log(0.5 * torch.ones(d_model, d_state)))
+            self.A_imag = nn.Parameter(torch.pi * torch.arange(d_model).expand(d_state, d_model).T)
+        else:
+            self.log_A = nn.Parameter(torch.rand(1, d_inner, d_state))
         self.out_proj = nn.Linear(d_inner, d_model)
 
+        self.Abar_epsilon = epsilon
+ 
     def _change_basis(self, Q, X):
         # Q: (B, L', L)
         # X: (B, L, ED, N)
@@ -361,46 +382,64 @@ class GraphSSM(nn.Module):
         # EigVals: (B, L')
         EigVals = EigVals.view(*EigVals.shape, 1, 1) # Eigenvalues of L = 1-M
         EigVals = 1.0 - EigVals # Eigenvalues of M = 1-L
+        
+        EigVals = torch.nan_to_num(EigVals, nan=0.0)
+        EigVecs = torch.nan_to_num(EigVecs, nan=0.0)
+        EigVecs = EigVecs / EigVecs.norm(dim=-1, keepdim=True)
+        EigVecs = torch.nan_to_num(EigVecs, nan=0.0)
+
+        if self.BC_complex:
+            EigVecs = torch.complex(EigVecs, torch.zeros_like(EigVecs))
+        
+        # print(x.norm(dim=-1).max().item(), x.norm(dim=-1).min().item())
 
         # Gated MLP
-        x = self.in_proj(x) # (B, L, 2*ED)
+        B, L, D = x.shape
+        x = x.reshape(B*L, D)
+        x = self.in_proj(x).reshape(B, L, 2*self.d_inner) # (B, L, 2*ED)
         x, z = torch.split(x, [self.d_model, self.d_model], dim=-1) # (B, L, ED), (B, L, ED)
         x = x*F.silu(z) # (B, L, ED)
 
         # Selective parameters
         B = self.B # (1, ED, N)
         C = self.C # (1, ED, N)
-        delta = F.softplus(self.Delta) # (1, ED)
-        A = -torch.exp(self.A_log) # (1, ED, N)
+        delta = torch.exp(self.log_Delta) # (1, ED)
+        if self.A_complex:
+            A = -torch.exp(self.log_A_real) + 1j * self.A_imag # (H N)
+        else:
+            A = -torch.exp(self.log_A) # (1, ED, N)
         
         # Discretisation
         deltaA = delta.unsqueeze(-1) * A # (1, ED, N)
-        Abar = torch.exp(deltaA) # (1, ED, N)
+        Abar = torch.exp(-self.Abar_epsilon + deltaA) # (1, ED, N) # epsilon so that Abar is not too close to 1 (which happens in practice)
         deltaB = delta.unsqueeze(-1) * B # (1, ED, N)
         Bbar = deltaB # (1, ED, N)
 
-        XB = (x.unsqueeze(-1) * Bbar) # (B, L, ED, N)
+        X = x.unsqueeze(-1) # (B, L, ED, 1)
 
-        # # # Propagate along graph
-        QTXB = self._change_basis(EigVecs.permute(0,2,1), XB) # (B, L', ED, N)
-        # lambdaQTXBA = QTXB
+        # Propagate along graph
+
+        # XB = (X * Bbar) # (B, L, ED, N)
+        # QTXB = self._change_basis(EigVecs.permute(0,2,1), XB) # (B, L', ED, N)
+        QTX = self._change_basis(EigVecs.permute(0,2,1), X) # (B, L', ED, 1)
+        QTXB = (QTX * Bbar) # (B, L', ED, N)
+
         lambdaA = EigVals*Abar.unsqueeze(1)
         lambdaQTXBA = (lambdaA / (1.0 - lambdaA)) * QTXB # (B, L', ED, N)
+        if self.A_complex and not self.BC_complex:
+            lambdaQTXBA = lambdaQTXBA.real
         MXBA = self._change_basis(EigVecs, lambdaQTXBA) # (B, L, ED, N)
-        MXBA = XB + MXBA
-        # MXBA = XB
 
         # Project back to original space
         MXBAC = (MXBA * C.unsqueeze(0)).sum(dim=-1) #(B, L, ED)
-        # MXBAC = MXBAC.real
+        if self.BC_complex:
+            MXBAC = MXBAC.real
 
-        # Residual connection
-        y = x + MXBAC # (B, L, ED)
+        y = MXBAC # (B, L, ED)
 
         # Output projection
         y = F.silu(y) # (B, L, ED)
         y = self.out_proj(y) # (B, L, D)
-        print(y.shape)
         return y
     
 

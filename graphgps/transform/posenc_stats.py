@@ -65,17 +65,28 @@ def compute_posenc_stats(data, pe_types, is_undirected, cfg):
         #max_eigenvector = evects[:, max_eig_index]
         #centrality = max_eigenvector / np.linalg.norm(max_eigenvector)
 
+        include_structural = False
         if 'LapPE' in pe_types:
             max_freqs=cfg.posenc_LapPE.eigen.max_freqs
             eigvec_norm=cfg.posenc_LapPE.eigen.eigvec_norm
+            try:
+                include_structural = cfg.posenc_LapPE.eigen.include_high_freqs
+            except:
+                pass
         elif 'EquivStableLapPE' in pe_types:  
             max_freqs=cfg.posenc_EquivStableLapPE.eigen.max_freqs
             eigvec_norm=cfg.posenc_EquivStableLapPE.eigen.eigvec_norm
+            try:
+                include_structural = cfg.posenc_EquivStableLapPE.eigen.include_high_freqs
+            except:
+                pass
+
         
         data.EigVals, data.EigVecs = get_lap_decomp_stats(
             evals=evals, evects=evects,
             max_freqs=max_freqs,
-            eigvec_norm=eigvec_norm)
+            eigvec_norm=eigvec_norm,
+            include_structural=include_structural)
         #G = to_networkx(data, to_undirected=True)
         #centrality = nx.eigenvector_centrality_numpy(G)
         #data.EigCentrality = torch.from_numpy(np.array([centrality[node] for node in centrality])).float()
@@ -167,7 +178,7 @@ def compute_posenc_stats(data, pe_types, is_undirected, cfg):
     return data
 
 
-def get_lap_decomp_stats(evals, evects, max_freqs, eigvec_norm='L2'):
+def get_lap_decomp_stats(evals, evects, max_freqs, eigvec_norm='L2', include_structural=False):
     """Compute Laplacian eigen-decomposition-based PE stats of the given graph.
 
     Args:
@@ -181,7 +192,16 @@ def get_lap_decomp_stats(evals, evects, max_freqs, eigvec_norm='L2'):
     N = len(evals)  # Number of nodes, including disconnected nodes.
 
     # Keep up to the maximum desired number of frequencies.
-    idx = evals.argsort()[:max_freqs]
+    if not include_structural:
+        idx = evals.argsort()[:max_freqs]
+    else:
+        sorted_idx = np.argsort(evals)
+        high_freqs = min(max_freqs, N - max_freqs)
+        if high_freqs > 0:
+            idx = np.concatenate((sorted_idx[:max_freqs], sorted_idx[-high_freqs:]))
+        else:
+            idx = evals.argsort()[:max_freqs]
+        max_freqs = 2*max_freqs
     evals, evects = evals[idx], np.real(evects[:, idx])
     evals = torch.from_numpy(np.real(evals)).clamp_min(0)
 
@@ -200,6 +220,7 @@ def get_lap_decomp_stats(evals, evects, max_freqs, eigvec_norm='L2'):
         EigVals = evals.unsqueeze(0)
     EigVals = EigVals.repeat(N, 1).unsqueeze(2)
 
+    assert EigVals.shape[1] == EigVecs.shape[1] == max_freqs
     return EigVals, EigVecs
 
 

@@ -20,9 +20,10 @@ dataset:
 posenc_LapPE:
   enable: True
   eigen:
-    laplacian_norm: none
+    laplacian_norm: sym
     eigvec_norm: L2
     max_freqs: 10
+    include_high_freqs: True
   model: DeepSet
   dim_pe: 16
   layers: 2
@@ -40,8 +41,8 @@ gt:
   layer_type: CustomGatedGCN+GraphSSML65
   n_heads: 4
   dim_hidden: 96  # `gt.dim_hidden` must match `gnn.dim_inner`
-  dropout: 0.5
-  attn_dropout: 0.4
+  dropout: 0.1
+  attn_dropout: 0.5
   layer_norm: False
   batch_norm: True
 gnn:

@@ -35,14 +35,17 @@ model:
   type: GPSModel
   loss_fun: weighted_cross_entropy
 gt:
-  layer_type: CustomGatedGCN+Mamba_Hybrid_Degree_Noise_Bucket
+  layer_type: CustomGatedGCN+SharedMambaL65
   layers: 4
   n_heads: 8
   dim_hidden: 96  # `gt.dim_hidden` must match `gnn.dim_inner`
-  dropout: 0.0
+  dropout: 0.3
   attn_dropout: 0.5
   layer_norm: False
   batch_norm: True
+  mamba_heuristics: 'global_pe_2_bidirectional'
+  mamba_noise: 0.05
+  mamba_iterations: 3
 gnn:
   head: inductive_node
   layers_pre_mp: 0
