@@ -1,24 +1,25 @@
 out_dir: results
-metric_best: ap
+metric_best: mrr
+num_workers: 4
 wandb:
   use: True
-  project: peptides_subgraph
-  entity: l65
+  project: LRGB-Benchmark-RandomSeed
+  entity: project
 dataset:
   format: OGB
-  name: peptides-functional
-  task: graph
-  task_type: classification_multilabel
+  name: PCQM4Mv2-full
+  task: graph  # PCQM4Mv2Contact is edge-level task, but because it is inductive, set to 'graph'
+  task_type: classification
+  resample_negative: True
   transductive: False
   node_encoder: True
-  node_encoder_name: Atom+LapPE
+  node_encoder_name: Atom
   node_encoder_bn: False
   edge_encoder: True
   edge_encoder_name: Bond
   edge_encoder_bn: False
-  split_mode: standard
 posenc_LapPE:
-  enable: True
+  enable: False
   eigen:
     laplacian_norm: none
     eigvec_norm: L2
@@ -35,22 +36,20 @@ train:
 model:
   type: GPSModel
   loss_fun: cross_entropy
-  graph_pooling: mean
+  edge_decoding: dot
 gt:
-  layer_type: CustomGatedGCN+MeanL65
+  layer_type: CustomGatedGCN+Subgraph_Mamba_L65 #Mamba_Hybrid_Degree_Noise #Mamba
+  layers: 4
   n_heads: 4
   dim_hidden: 96  # `gt.dim_hidden` must match `gnn.dim_inner`
   dropout: 0.0
   attn_dropout: 0.5
   layer_norm: False
   batch_norm: True
-  mamba_heuristics: global_pe_1
-  mamba_permute_iterations: 3
-  mamba_noise: 0.00
 gnn:
-  head: default
+  head: inductive_edge
   layers_pre_mp: 0
-  layers_post_mp: 1  # Not used when `gnn.head: san_graph`
+  layers_post_mp: 1
   dim_inner: 96  # `gt.dim_hidden` must match `gnn.dim_inner`
   batchnorm: True
   act: relu
@@ -59,8 +58,8 @@ optim:
   clip_grad_norm: True
   optimizer: adamW
   weight_decay: 0.01
-  base_lr: 0.001
-  max_epoch: 200
+  base_lr: 0.002
+  max_epoch: 100
   scheduler: cosine_with_warmup
   num_warmup_epochs: 10
 seed: 0
