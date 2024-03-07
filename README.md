@@ -67,7 +67,7 @@ python mamba-test.py
 ```
 Then delete `causal_conv1d/` and `mamba/`:
 ```
-rm -rf causal_conv1d/
+rm -rf causal-conv1d/
 rm -rf mamba/
 ```
 

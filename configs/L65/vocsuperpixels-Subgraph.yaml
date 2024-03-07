@@ -1,6 +1,7 @@
 out_dir: results
 metric_best: f1
 wandb:
+  use: True
   project: LRGB-Benchmark-RandomSeed
   entity: project
 dataset:
