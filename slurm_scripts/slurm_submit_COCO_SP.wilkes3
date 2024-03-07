@@ -10,7 +10,7 @@
 
 #! sbatch directives begin here ###############################
 #! Name of the job:
-#SBATCH -J changeme_7cd58d36_descriptive_title
+#SBATCH -J COCO_SP
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A COMPUTERLAB-SL2-GPU
 #! How many whole nodes should be allocated?
@@ -22,7 +22,7 @@
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
 #SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
-#SBATCH --time=0:30:00
+#SBATCH --time=12:00:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=NONE
 #! Uncomment this to prevent the job from being requeued (e.g. if
@@ -30,8 +30,8 @@
 ##SBATCH --no-requeue
 
 # Output and Logs directory
-#SBATCH -o ./logs/slurm-%j.out
-#SBATCH -e ./logs/slurm-%j.err
+#SBATCH -o ./logs/COCO_SP/slurm-%j.out
+#SBATCH -e ./logs/COCO_SP/slurm-%j.err
 
 
 #! Do not change:
@@ -60,13 +60,14 @@ module load rhel8/default-amp              # REQUIRED - loads the basic environm
 module unload miniconda/3
 module load cuda/11.8
 
+conda init
 conda activate L65
 
 #! Full path to application executable: 
 application="python"
 
 #! Run options for the application:
-options="mamba-test.py"
+options="main.py --cfg configs/Mamba/cocosuperpixels-EX.yaml dataset.dir /rds/user/er647/hpc-work/L65/COCOSuperpixels wandb.project COCO-SP wandb.entity l65 device cuda"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory
