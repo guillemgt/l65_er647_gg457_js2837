@@ -134,7 +134,7 @@ class SubgraphEncoder(nn.Module):
         return self.projection(subgraph_representation)
 
 
-def calculate_max_k(degrees, min_k=2, max_k=4, scale_factor=1.0):
+def calculate_max_k(degrees, min_k=2, max_k=2, scale_factor=1.0):
     normalized_degrees = (degrees - degrees.min()) / (degrees.max() - degrees.min())
     
     k_values = max_k - (normalized_degrees * (max_k - min_k) * scale_factor)
@@ -595,6 +595,9 @@ class GPSLayer(nn.Module):
 
     def forward(self, batch):
         h = batch.x
+        print(batch.x.shape)
+        if batch.edge_attr is None:
+            batch.edge_attr = torch.zeros(len(batch.edge_index[0]), batch.x.shape[1]).to(batch.x.device)
         h_in1 = h  # for first residual connection
         h_out_list = []
         # Local MPNN with edge attributes.
@@ -667,7 +670,7 @@ class GPSLayer(nn.Module):
 
 
             elif self.global_model_type == 'Subgraph_Mamba_L65':
-                print('Lets go')
+                # print('Lets go')
                 degrees = degree(batch.edge_index[0], batch.x.shape[0]).to(torch.long)
                 num_nodes = batch.x.shape[0]
                 heuristic = heuristic_fns[self.mamba_heuristics[0]][0](batch)[0]
@@ -686,9 +689,9 @@ class GPSLayer(nn.Module):
                 device = batch.batch.device
 
                 start_time = time.time()
-                from tqdm import tqdm
+                # from tqdm import tqdm
 
-                for graph_id in tqdm(unique_graphs):
+                for graph_id in unique_graphs:
                     # Mask for nodes in the current graph
                     graph_mask = (batch.batch == graph_id)
                     
@@ -726,7 +729,7 @@ class GPSLayer(nn.Module):
                 unique_max_ks = torch.unique(max_k_values).tolist()
 
                 # Process nodes in batches based on their unique max_k values
-                for current_max_k in tqdm(range(2, max(unique_max_ks)+1)):
+                for current_max_k in range(2, max(unique_max_ks)+1):
                     new_node_indices = (current_max_k <= max_k_values).nonzero(as_tuple=True)[0]
                     
                     # Compute k-hop subgraph for all nodes with the current max_k
@@ -770,6 +773,7 @@ class GPSLayer(nn.Module):
                 # Reorder the sequence according to the heuristics and the index of the subgraph or whether it is a node
                 h_ind_perm = lexsort([heuristics_sequence, subgraph_indices_sequence, batches_sequence])
                 h_dense, mask = to_dense_batch(encodings_sequence[h_ind_perm], batches_sequence[h_ind_perm])
+        
                 h_ind_perm_reverse = torch.argsort(h_ind_perm)
                 del heuristics_sequence, batches_sequence
                 torch.cuda.empty_cache()
@@ -780,6 +784,7 @@ class GPSLayer(nn.Module):
                 # Get the indices of the n-th node in the final embedding sequence and get the corresponding embedding
                 node_indices_in_reordered_sequence_reverse = h_ind_perm_reverse[node_indices]
                 h_attn = final_embeddings[node_indices_in_reordered_sequence_reverse]
+
                 end_time = time.time()
                 print(f"Execution time: {end_time - start_time} seconds")
             
