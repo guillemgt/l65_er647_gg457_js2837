@@ -1,0 +1,42 @@
+program: /home/js2837/projects/l65_er647_gg457_js2837/main.py # Path to the program to run
+entity: l65
+project: Experiments Round 1 # Project name
+
+name: mamba_one_positional_encoding_unidirectional_noisy
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  # - --sweep_id
+  # - test0
+  - device 
+  - cuda
+  - gt.layer_type
+  - CustomGatedGCN+MambaL65
+  - gt.mamba_heuristics
+  - global_pe_1
+  - gt.mamba_noise
+  - 0.1
+  - mamba_permute_iterations
+  - 5
+
+
+method: grid
+parameters:
+  cfg:
+    distribution: categorical
+    values:
+      - configs/Experiments/peptides-func.yaml
+      - configs/Experiments/peptides-struct.yaml
+      - configs/Experiments/pascal-voc.yaml
+
+
+  seed:  # Number of folds
+    distribution: categorical
+    values:
+      - 0
+      # - 1
+      # - 2
+
+
