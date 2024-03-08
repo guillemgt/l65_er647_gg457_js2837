@@ -17,12 +17,6 @@ command:
 
 
 method: grid
-parameters:
-  dataset.name:
-    values:
-      - CIFAR10
-      - MNIST
-
   seed:  # Number of folds
     distribution: categorical
     values:
