@@ -1,4 +1,5 @@
 import logging
+import os
 import os.path as osp
 import time
 import math
@@ -170,6 +171,8 @@ def load_dataset_master(format, name, dataset_dir):
             
         elif pyg_dataset_id == 'AQSOL':
             dataset = preformat_AQSOL(dataset_dir, name)
+        elif pyg_dataset_id == 'LRGB_PCQM4Mv2':
+            dataset = preformat_LRGB_PCQM4Mv2(dataset_dir, name)
 
         else:
             raise ValueError(f"Unexpected PyG Dataset identifier: {format}")
@@ -266,6 +269,11 @@ def load_dataset_master(format, name, dataset_dir):
             except:
                 pass
             for pe_name in pe_enabled_list:
+                
+                if not os.path.exists(osp.join(dataset_dir, name)):
+                    # Create the directory
+                    os.makedirs(osp.join(dataset_dir, name))
+                
                 pe_stats_file = osp.join(dataset_dir, name, f'posenc_stats_{pe_name}_{cfg.posenc_LapPE.eigen.max_freqs}.pt')
 
                 if pe_name == 'LapPE':
@@ -532,6 +540,18 @@ def preformat_OGB_Graph(dataset_dir, name):
 
     return dataset
 
+def preformat_LRGB_PCQM4Mv2(dataset_dir, name):
+    from torch_geometric.datasets import LRGBDataset
+    
+    dataset = join_dataset_splits(
+        [LRGBDataset(root=dataset_dir, name="PCQM-Contact", split=split, 
+                                # transform=Compose(t)
+                                ) 
+         for split in ['train', 'val', 'test']]
+    )
+    
+    return dataset
+
 
 def preformat_OGB_PCQM4Mv2(dataset_dir, name):
     """Load and preformat PCQM4Mv2 from OGB LSC.
@@ -559,7 +579,6 @@ def preformat_OGB_PCQM4Mv2(dataset_dir, name):
         logging.error('ERROR: Failed to import PygPCQM4Mv2Dataset, '
                       'make sure RDKit is installed.')
         raise e
-
 
     dataset = PygPCQM4Mv2Dataset(root=dataset_dir)
     split_idx = dataset.get_idx_split()
