@@ -1,8 +1,8 @@
 program: /home/js2837/projects/l65_er647_gg457_js2837/main.py # Path to the program to run
-entity: L65
-project: Jad's Experiments # Project name
+entity: l65
+project: Experiments Round 1 # Project name
 
-name: test_default_template
+name: subgraph
 
 command:
   - ${env}
@@ -10,31 +10,27 @@ command:
   - ${program}
   # - --sweep_id
   # - test0
-  - --cfg
-  - configs/L65/default_cfg.yaml
   - device 
   - cuda
+  - gt.layer_type
+  - CustomGatedGCN+MeanL65
 
 
 method: grid
 parameters:
-  dataset.name:
+  cfg:
+    distribution: categorical
     values:
-      - CIFAR10
-      - MNIST
+      - configs/Experiments/peptides-func.yaml
+      - configs/Experiments/peptides-struct.yaml
+      - configs/Experiments/pascal-voc.yaml
 
-  prep.exp_deg:
-    values:
-      - 3
-      - 4
-      - 7
-      - 10
 
   seed:  # Number of folds
     distribution: categorical
     values:
       - 0
-      - 1
-      - 2
+      # - 1
+      # - 2
 
 
