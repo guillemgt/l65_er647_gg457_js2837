@@ -1,0 +1,38 @@
+program: /home/js2837/projects/l65_er647_gg457_js2837/main.py # Path to the program to run
+entity: l65
+project: Experiments Round 1 # Project name
+
+name: graphssm_0.1
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  # - --sweep_id
+  # - test0
+  - device 
+  - cuda
+  - gt.layer_type
+  - CustomGatedGCN+GraphSSML65
+  - posenc_LapPE.eigen.laplacian_norm
+  - sym
+  - posenc_LapPE.eigen.include_high_freqs
+  - True
+
+
+method: grid
+parameters:
+  cfg:
+    distribution: categorical
+    values:
+      - configs/Experiments/pascal-voc.yaml
+
+
+  seed:  # Number of folds
+    distribution: categorical
+    values:
+      - 0
+      # - 1
+      # - 2
+
+
