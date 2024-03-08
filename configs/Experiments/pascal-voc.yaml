@@ -48,6 +48,10 @@ gt:
   mamba_heuristics: global_pe_1
   mamba_permute_iterations: 3
   mamba_noise: 0.00
+  k_hop_min: 2
+  k_hop_max: 4
+  num_samples_per_graph: 5
+  num_strata: 5
 gnn:
   head: inductive_node
   layers_pre_mp: 0
@@ -63,7 +67,7 @@ optim:
   optimizer: adamW
   weight_decay: 0.001
   base_lr: 0.0015
-  max_epoch: 300
+  max_epoch: 1
   scheduler: cosine_with_warmup
   num_warmup_epochs: 10
 seed: 0
