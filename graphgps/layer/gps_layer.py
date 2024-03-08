@@ -397,7 +397,7 @@ class GPSLayer(nn.Module):
                  local_gnn_type, global_model_type, num_heads,
                  pna_degrees=None, equivstable_pe=False, dropout=0.0,
                  attn_dropout=0.0, layer_norm=False, batch_norm=True,
-                 bigbird_cfg=None, mamba_permute_iterations=0, mamba_noise=0.0, mamba_buckets_num=0, mamba_heuristics=['degree']):
+                 bigbird_cfg=None, mamba_permute_iterations=0, mamba_noise=0.0, mamba_buckets_num=0, mamba_heuristics=['degree'], num_samples_per_graph=10, num_strata=5, k_hop_min=1, k_hop_max=5):
         super().__init__()
 
         self.dim_h = dim_h
@@ -411,6 +411,10 @@ class GPSLayer(nn.Module):
         self.mamba_noise = mamba_noise
         self.mamba_buckets_num = mamba_buckets_num
         self.mamba_heuristics = mamba_heuristics
+        self.num_samples_per_graph = num_samples_per_graph
+        self.num_strata = num_strata
+        self.k_hop_min = k_hop_min
+        self.k_hop_max = k_hop_max
 
         # Local message-passing model.
         if local_gnn_type == 'None':
@@ -595,7 +599,6 @@ class GPSLayer(nn.Module):
 
     def forward(self, batch):
         h = batch.x
-        print(batch.x.shape)
         if batch.edge_attr is None:
             batch.edge_attr = torch.zeros(len(batch.edge_index[0]), batch.x.shape[1]).to(batch.x.device)
         h_in1 = h  # for first residual connection
@@ -684,9 +687,13 @@ class GPSLayer(nn.Module):
                 # Unique graphs in the batch
                 unique_graphs = torch.unique(batch.batch)
                 sampled_node_indices = []
-                num_samples_per_graph = 3
-                num_strata = 3
+                num_samples_per_graph = self.num_samples_per_graph
+                num_strata = self.num_samples_per_graph
+                max_k = self.k_hop_max
+                min_k = self.k_hop_min
                 device = batch.batch.device
+
+                from tqdm import tqdm
 
                 start_time = time.time()
                 # from tqdm import tqdm
@@ -724,19 +731,19 @@ class GPSLayer(nn.Module):
                 # NOTE(guillem): For now, we will order the sequence as (sugraph 1 for node 1), (sugraph 1 for node 2), ..., (subgraph 1 for node `num_nodes-1`), (subgraph 2 for node 1), ..., node 1, node 2, ...
                 # where the nodes are ordered according to `heuristic` 
 
-                max_k_values = calculate_max_k(degrees[sampled_node_indices])
+                max_k_values = calculate_max_k(degrees[sampled_node_indices], min_k=min_k, max_k=max_k)
                     
                 unique_max_ks = torch.unique(max_k_values).tolist()
 
                 # Process nodes in batches based on their unique max_k values
-                for current_max_k in range(2, max(unique_max_ks)+1):
+                for current_max_k in tqdm(range(min_k, max(unique_max_ks)+1)):
                     new_node_indices = (current_max_k <= max_k_values).nonzero(as_tuple=True)[0]
                     
                     # Compute k-hop subgraph for all nodes with the current max_k
                     _, sub_edges, _, edge_mask = k_hop_subgraph(
                         new_node_indices, current_max_k, batch.edge_index, num_nodes=num_nodes)
 
-                    for node_idx in new_node_indices:
+                    for node_idx in tqdm(new_node_indices):
                         # Extract the subgraph for the current node
 
                         # Find edges connected to the node

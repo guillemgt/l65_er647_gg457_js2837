@@ -97,6 +97,22 @@ class GPSModel(torch.nn.Module):
             mamba_parameters['mamba_buckets_num'] = cfg.gt.mamba_buckets_num
         except:
             pass
+        try:
+            mamba_parameters['num_samples_per_graph'] = cfg.gt.num_samples_per_graph
+        except:
+            pass
+        try:
+            mamba_parameters['num_strata'] = cfg.gt.num_strata
+        except:
+            pass
+        try:
+            mamba_parameters['k_hop_min'] = cfg.gt.k_hop_min
+        except:
+            pass
+        try:
+            mamba_parameters['k_hop_max'] = cfg.gt.k_hop_max
+        except:
+            pass
 
         layers = []
         for _ in range(cfg.gt.layers):
