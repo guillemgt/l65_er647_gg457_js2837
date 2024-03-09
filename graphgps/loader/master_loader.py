@@ -221,7 +221,7 @@ def load_dataset_master(format, name, dataset_dir):
     # Precompute necessary statistics for positional encodings.
     pe_enabled_list = []
     for key, pecfg in cfg.items():
-        if key.startswith('posenc_') and pecfg.enable and (not key.startswith('posenc_ER')):
+        if key.startswith('posenc_') and pecfg is not None and pecfg.enable and (not key.startswith('posenc_ER')):
             pe_name = key.split('_', 1)[1]
             pe_enabled_list.append(pe_name)
             if hasattr(pecfg, 'kernel'):
