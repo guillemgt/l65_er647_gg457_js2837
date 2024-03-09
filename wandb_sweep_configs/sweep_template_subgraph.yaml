@@ -1,4 +1,4 @@
-program: /home/js2837/projects/l65_er647_gg457_js2837/main.py # Path to the program to run
+program: /home/js2837/l65_er647_gg457_js2837/main.py # Path to the program to run
 entity: l65
 project: Experiments Round 1 # Project name
 
@@ -10,6 +10,7 @@ command:
   - ${program}
   # - --sweep_id
   # - test0
+  - ${args}
   - device 
   - cuda
   - gt.layer_type
@@ -28,11 +29,10 @@ parameters:
       - configs/Experiments/pascal-voc.yaml
       - configs/Experiments/pcqm-contact.yaml
 
-
-  seed:  # Number of folds
-    distribution: categorical
-    values:
-      - 0
+  # seed:  # Number of folds
+  #   distribution: categorical
+  #   values:
+  #     - 0
       # - 1
       # - 2
 

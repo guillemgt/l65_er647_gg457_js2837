@@ -23,6 +23,7 @@ posenc_LapPE:
     laplacian_norm: none
     eigvec_norm: L2
     max_freqs: 10
+    include_high_freqs: False
   model: DeepSet
   dim_pe: 16
   layers: 2

@@ -1,1 +1,9 @@
-wandb agent id1
+wandb agent 'l65/Experiments Round 1/obzl6iom'
+wandb agent 'l65/Experiments Round 1/n7ug6zsa'
+wandb agent 'l65/Experiments Round 1/gu9br9te'
+wandb agent 'l65/Experiments Round 1/wnwj0jiq'
+wandb agent 'l65/Experiments Round 1/ghnpo1m1'
+wandb agent 'l65/Experiments Round 1/51jeu153'
+wandb agent 'l65/Experiments Round 1/03d1wlcs'
+wandb agent 'l65/Experiments Round 1/fufw2x57'
+wandb agent 'l65/Experiments Round 1/tx2o7aa0'
