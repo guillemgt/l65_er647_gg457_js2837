@@ -27,7 +27,7 @@ parameters:
       - configs/Experiments/peptides-func.yaml
       - configs/Experiments/peptides-struct.yaml
       - configs/Experiments/pascal-voc.yaml
-      - configs/Experiments/pcqm-contact.yaml
+      # - configs/Experiments/pcqm-contact.yaml
 
   # seed:  # Number of folds
   #   distribution: categorical
