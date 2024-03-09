@@ -274,7 +274,7 @@ def load_dataset_master(format, name, dataset_dir):
                     # Create the directory
                     os.makedirs(osp.join(dataset_dir, name))
                 
-                pe_stats_file = osp.join(dataset_dir, name, f'posenc_stats_{pe_name}_{cfg.posenc_LapPE.eigen.max_freqs}.pt')
+                pe_stats_file = osp.join(dataset_dir, name, f'posenc_stats_{pe_name}_{cfg.posenc_LapPE.eigen.max_freqs}{"_highfreq" if include_structural else ""}.pt')
 
                 if pe_name == 'LapPE':
                     # Save dataset.EigVals, dataset.EigVecs to pe_stats_file
