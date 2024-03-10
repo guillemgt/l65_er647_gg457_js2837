@@ -134,6 +134,70 @@ class SubgraphEncoder(nn.Module):
         return self.projection(subgraph_representation)
 
 
+from torch_scatter import scatter, scatter_mean, scatter_max, scatter_sum
+import torch_geometric.nn as pyg_nn
+class AggregateLayer(pyg_nn.conv.MessagePassing):
+    """
+        GatedGCN layer
+        Residual Gated Graph ConvNets
+        https://arxiv.org/pdf/1711.07553.pdf
+    """
+    def __init__(self, aggr='mean', **kwargs):
+        super().__init__(aggr=aggr, **kwargs)
+
+    def forward(self, batch):
+        x, e, edge_index = batch.x, batch.edge_attr, batch.edge_index
+        x = self.propagate(edge_index,
+            x=x,
+            e=e)
+        return x
+
+    def message(self, x_i, x_j, e):
+        return x_i - x_j
+
+    def aggregate(self, inputs, index):
+        return scatter(inputs, index, dim=self.node_dim, reduce=self.aggr)
+
+    def update(self, aggr_out, x):
+        return aggr_out
+    
+
+class EfficientSubgraphEncoder(nn.Module):
+    def __init__(self, dim_in, dim_out, k_min=2, k_max=5, tokens_out=1, *args, **kwargs):
+        super().__init__()
+        # self.in_proj = nn.Linear(dim_in, dim_out)
+        assert k_max >= k_min
+
+        ks = (k_max-k_min+1)
+        self.output_mult = tokens_out*ks
+        
+        self.out_proj = nn.Sequential(
+            nn.BatchNorm1d(dim_in),
+            nn.Linear(dim_in, dim_out),
+            nn.ReLU(),
+            nn.Linear(dim_out, dim_out*tokens_out)
+        )
+        self.k_max = k_max
+        self.k_min = k_min
+        self.layer = AggregateLayer(*args, **kwargs)
+        self.dim_out = dim_out
+
+    def forward(self, x, *args, **kwargs):
+        # x.x = self.in_proj(x.x)
+
+        xs = []
+        for i in range(self.k_max):
+            if i >= self.k_min:
+                xs.append(x.x)
+            x.x = self.layer(x, *args, **kwargs)
+        xs.append(x.x)
+        y = torch.cat([z.unsqueeze(1) for z in xs], dim=1)
+        y = y.view(-1, self.dim_out)
+        y = self.out_proj(y)
+        return y.view(-1, self.output_mult, self.dim_out)
+
+
+
 def calculate_max_k(degrees, min_k=2, max_k=2, scale_factor=1.0):
     normalized_degrees = (degrees - degrees.min()) / (degrees.max() - degrees.min())
     
@@ -488,6 +552,19 @@ class GPSLayer(nn.Module):
                     d_conv=4,    # Local convolution width
                     expand=1,    # Block expansion factor
                 )
+        elif 'EfficientSubgraph_Mamba_L65' in global_model_type:
+            self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,    # Local convolution width
+                    expand=1,    # Block expansion factor
+                )
+            self.subgraph_encoder = EfficientSubgraphEncoder(dim_h, dim_h,
+                                             k_min=self.k_hop_min,
+                                             k_max=self.k_hop_max,
+                                             tokens_out=self.num_samples_per_graph,
+                                             dropout=dropout,
+                                             residual=True,
+                                             equivstable_pe=equivstable_pe)
         elif 'Subgraph_Mamba_L65' in global_model_type:
             self.self_attn = Mamba(d_model=dim_h, # Model dimension d_model
                     d_state=16,  # SSM state expansion factor
@@ -791,6 +868,45 @@ class GPSLayer(nn.Module):
 
                 # end_time = time.time()
                 # print(f"Execution time: {end_time - start_time} seconds")
+
+                
+
+            elif self.global_model_type == 'EfficientSubgraph_Mamba_L65':
+                encoded_subgraphs = self.subgraph_encoder(Batch(batch=batch,
+                                                   x=h,
+                                                   edge_index=batch.edge_index,
+                                                   edge_attr=batch.edge_attr,
+                                                   pe_EquivStableLapPE=es_data))
+
+                repeats = self.subgraph_encoder.output_mult+1
+                num_nodes = batch.x.shape[0]
+                
+                encodings_sequence = torch.cat([
+                    encoded_subgraphs,
+                    h.unsqueeze(1),
+                ], dim=1)
+                encodings_sequence = encodings_sequence.view(-1, h.shape[-1])
+                heuristic = heuristic_fns[self.mamba_heuristics[0]][0](batch)[0]
+
+                # Copy heuristics where the first repeat has the right sign, the second is negated, and so on
+                heuristics_sequence = torch.repeat_interleave(heuristic, repeats, dim=0)
+                for i in range(1, repeats, 2):
+                    heuristics_sequence[i::repeats] = -heuristics_sequence[i::repeats]
+                batches_sequence = torch.repeat_interleave(batch.batch, repeats, dim=0)
+                subgraph_indices_sequence = torch.arange(repeats, device=encodings_sequence.device).repeat(num_nodes)
+                node_indices = (repeats-1) + repeats*torch.arange(num_nodes, device=encodings_sequence.device)
+
+                # Reorder the sequence according to the heuristics and the index of the subgraph or whether it is a node
+                h_ind_perm = lexsort([heuristics_sequence, subgraph_indices_sequence, batches_sequence])
+                h_dense, mask = to_dense_batch(encodings_sequence[h_ind_perm], batches_sequence[h_ind_perm])
+                h_ind_perm_reverse = torch.argsort(h_ind_perm)
+
+                # Run mamba to compute the final embeddings for subgraphs and nodes
+                final_embeddings = self.self_attn(h_dense)[mask]
+
+                # Get the indices of the n-th node in the final embedding sequence and get the corresponding embedding
+                node_indices_in_reordered_sequence_reverse = h_ind_perm_reverse[node_indices]
+                h_attn = final_embeddings[node_indices_in_reordered_sequence_reverse]
             
             elif self.global_model_type == 'MambaL65':
                 # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
