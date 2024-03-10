@@ -10,7 +10,7 @@
 
 #! sbatch directives begin here ###############################
 #! Name of the job:
-#SBATCH -J COCO_SP
+#SBATCH -J mamba_pe1u_noise
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A COMPUTERLAB-SL2-GPU
 #! How many whole nodes should be allocated?
