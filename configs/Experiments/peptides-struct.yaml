@@ -50,8 +50,8 @@ gt:
   mamba_permute_iterations: 3
   mamba_noise: 0.00
   k_hop_min: 1
-  k_hop_max: 3
-  num_samples_per_graph: 5
+  k_hop_max: 4
+  num_samples_per_graph: 1
   num_strata: 5
 gnn:
   head: default

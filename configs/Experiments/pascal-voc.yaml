@@ -48,9 +48,9 @@ gt:
   mamba_heuristics: global_pe_1
   mamba_permute_iterations: 3
   mamba_noise: 0.00
-  k_hop_min: 2
+  k_hop_min: 1
   k_hop_max: 4
-  num_samples_per_graph: 4
+  num_samples_per_graph: 1
   num_strata: 4
 gnn:
   head: inductive_node
