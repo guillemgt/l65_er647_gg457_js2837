@@ -22,13 +22,13 @@
 #! Note that the job submission script will enforce no more than 32 cpus per GPU.
 #SBATCH --gres=gpu:1
 #! How much wallclock time will be required?
-#SBATCH --time=12:00:00
+#SBATCH --time=20:00:00
 #! What types of email messages do you wish to receive?
 #SBATCH --mail-type=NONE
 #! Uncomment this to prevent the job from being requeued (e.g. if
 #! interrupted by node failure or system downtime):
 ##SBATCH --no-requeue
-#SBATCH --array=0-8
+#SBATCH --array=0-3
 
 # Output and Logs directory
 #SBATCH -o ./logs/exp1_subgraph_config-seed-job_%A_%a.out
@@ -64,12 +64,12 @@ module load cuda/11.8
 conda init
 conda activate L65
 
-configs=("configs/Experiments/peptides-func.yaml" "configs/Experiments/peptides-struct.yaml" "configs/Experiments/pascal-voc.yaml")
-seeds=(0 1 2)
+configs=("configs/Experiments/peptides-func.yaml" "configs/Experiments/pascal-voc.yaml")
+seeds=(1 2)
 
 # Calculate config and seed index based on SLURM_ARRAY_TASK_ID
-config_index=$(($SLURM_ARRAY_TASK_ID / 3))
-seed_index=$(($SLURM_ARRAY_TASK_ID % 3))
+config_index=$(($SLURM_ARRAY_TASK_ID / 2))
+seed_index=$(($SLURM_ARRAY_TASK_ID % 2))
 
 # Get the specific config and seed values
 config=${configs[$config_index]}
@@ -79,7 +79,7 @@ seed=${seeds[$seed_index]}
 application="python"
 
 #! Run options for the application:
-options="main.py --cfg $config seed $seed  wandb.project Experiments_round_1 wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+Subgraph_Mamba_L65 gt.mamba_heuristics global_pe_1"
+options="main.py --cfg $config seed $seed  wandb.project Experiments_round_1 wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+Subgraph_Mamba_L65 gt.mamba_heuristics global_pe_1 optim.max_epoch 100"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory
