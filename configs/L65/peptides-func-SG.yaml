@@ -44,7 +44,13 @@ gt:
   attn_dropout: 0.5
   layer_norm: False
   batch_norm: True
-  mamba_heuristics: 'global_pe_1'
+  mamba_heuristics: global_pe_1
+  mamba_permute_iterations: 3
+  mamba_noise: 0.00
+  k_hop_min: 1
+  k_hop_max: 3
+  num_samples_per_graph: 5
+  num_strata: 5
 gnn:
   head: default
   layers_pre_mp: 0

@@ -693,10 +693,7 @@ class GPSLayer(nn.Module):
                 min_k = self.k_hop_min
                 device = batch.batch.device
 
-                from tqdm import tqdm
-
-                start_time = time.time()
-                # from tqdm import tqdm
+                # start_time = time.time()
 
                 for graph_id in unique_graphs:
                     # Mask for nodes in the current graph
@@ -736,14 +733,14 @@ class GPSLayer(nn.Module):
                 unique_max_ks = torch.unique(max_k_values).tolist()
 
                 # Process nodes in batches based on their unique max_k values
-                for current_max_k in tqdm(range(min_k, max(unique_max_ks)+1)):
+                for current_max_k in range(min_k, max(unique_max_ks)+1):
                     new_node_indices = (current_max_k <= max_k_values).nonzero(as_tuple=True)[0]
                     
                     # Compute k-hop subgraph for all nodes with the current max_k
                     _, sub_edges, _, edge_mask = k_hop_subgraph(
                         new_node_indices, current_max_k, batch.edge_index, num_nodes=num_nodes)
 
-                    for node_idx in tqdm(new_node_indices):
+                    for node_idx in new_node_indices:
                         # Extract the subgraph for the current node
 
                         # Find edges connected to the node
@@ -792,8 +789,8 @@ class GPSLayer(nn.Module):
                 node_indices_in_reordered_sequence_reverse = h_ind_perm_reverse[node_indices]
                 h_attn = final_embeddings[node_indices_in_reordered_sequence_reverse]
 
-                end_time = time.time()
-                print(f"Execution time: {end_time - start_time} seconds")
+                # end_time = time.time()
+                # print(f"Execution time: {end_time - start_time} seconds")
             
             elif self.global_model_type == 'MambaL65':
                 # NOTE(guillem): This should include all of the Mamba variants below, but in a much more concise way!
