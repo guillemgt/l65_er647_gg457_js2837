@@ -2,7 +2,7 @@
 
 # Define configs and seeds
 configs=("configs/Experiments/pascal-voc.yaml")
-seeds=(1 2)
+seeds=(0)
 
 # Full path to application executable
 application="python"

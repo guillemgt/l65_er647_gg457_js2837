@@ -1,7 +1,5 @@
 #!/bin/bash
 
-conda activate L65
-
 # Define configs and seeds
 configs=("configs/Experiments/peptides-func.yaml" "configs/Experiments/peptides-struct.yaml" "configs/Experiments/pascal-voc.yaml")
 seeds=(0 1 2)
@@ -23,7 +21,7 @@ export OMP_NUM_THREADS=1
 for config in "${configs[@]}"; do
     for seed in "${seeds[@]}"; do
         # Define run options for the application
-        options="main.py --cfg $config --seed $seed --wandb.project Experiments_round_1 --wandb.entity l65 --device cuda --gt.layer_type CustomGatedGCN+GraphSSML65 --posenc_LapPE.eigen.laplacian_norm sym --posenc_LapPE.eigen.include_high_freqs True"
+        options="main.py --cfg $config seed $seed wandb.project graphssm_experiments_round_1 wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+GraphSSML65 posenc_LapPE.eigen.laplacian_norm sym posenc_LapPE.eigen.include_high_freqs True"
 
         # Build the command to execute
         CMD="$application $options"

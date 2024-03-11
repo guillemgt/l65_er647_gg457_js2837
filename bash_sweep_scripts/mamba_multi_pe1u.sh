@@ -1,10 +1,8 @@
 #!/bin/bash
 
-conda activate L65
-
 # Define configs and seeds
 configs=("configs/Experiments/peptides-func.yaml" "configs/Experiments/peptides-struct.yaml" "configs/Experiments/pascal-voc.yaml")
-seeds=(0 1 2)
+seeds=(1 2)
 
 # Full path to application executable
 application="python"
