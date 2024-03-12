@@ -2,7 +2,7 @@
 
 # Define configs and seeds
 configs=("configs/Experiments/peptides-func.yaml" "configs/Experiments/peptides-struct.yaml" "configs/Experiments/pascal-voc.yaml")
-seeds=(1 2)
+seeds=(3 4)
 
 # Full path to application executable
 application="python"
@@ -21,7 +21,7 @@ export OMP_NUM_THREADS=1
 for config in "${configs[@]}"; do
     for seed in "${seeds[@]}"; do
         # Define run options for the application
-        options="main.py --cfg $config seed $seed  wandb.project Experiments_round_1 wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+MambaL65 gt.mamba_heuristics global_pe_1 gt.mamba_noise 0.1 mamba_permute_iterations 5"
+        options="main.py --cfg $config seed $seed  wandb.project mamba_pe1u_noise_devgpu wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+MambaL65 gt.mamba_heuristics global_pe_1 gt.mamba_noise 0.1 mamba_permute_iterations 5"
 
         # Build the command to execute
         CMD="$application $options"
