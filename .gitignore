@@ -176,6 +176,7 @@ scripts/pcqm4m/pcqm4m-v2/
 slurm_history/
 datasets/
 dataset/
+results_analysis/wandb_saved_plots/
 pretrained/
 results/
 vocprep/benchmark_RELEASE/
