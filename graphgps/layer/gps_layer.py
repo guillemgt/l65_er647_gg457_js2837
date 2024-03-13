@@ -165,16 +165,17 @@ class AggregateLayer(pyg_nn.conv.MessagePassing):
 class EfficientSubgraphEncoder(nn.Module):
     def __init__(self, dim_in, dim_out, k_min=2, k_max=5, tokens_out=1, *args, **kwargs):
         super().__init__()
-        # self.in_proj = nn.Linear(dim_in, dim_out)
+        self.in_proj = nn.Sequential(
+            nn.BatchNorm1d(dim_in),
+            nn.Linear(dim_in, dim_out),
+            nn.ReLU(),
+        )
         assert k_max >= k_min
 
         ks = (k_max-k_min+1)
         self.output_mult = tokens_out*ks
         
         self.out_proj = nn.Sequential(
-            nn.BatchNorm1d(dim_in),
-            nn.Linear(dim_in, dim_out),
-            nn.ReLU(),
             nn.Linear(dim_out, dim_out*tokens_out)
         )
         self.k_max = k_max
@@ -183,7 +184,8 @@ class EfficientSubgraphEncoder(nn.Module):
         self.dim_out = dim_out
 
     def forward(self, x, *args, **kwargs):
-        # x.x = self.in_proj(x.x)
+        num_nodes = x.x.shape[0]
+        x.x = self.in_proj(x.x)
 
         xs = []
         for i in range(self.k_max):
@@ -194,7 +196,7 @@ class EfficientSubgraphEncoder(nn.Module):
         y = torch.cat([z.unsqueeze(1) for z in xs], dim=1)
         y = y.view(-1, self.dim_out)
         y = self.out_proj(y)
-        return y.view(-1, self.output_mult, self.dim_out)
+        return y.view(num_nodes, self.output_mult, self.dim_out)
 
 
 
@@ -880,6 +882,11 @@ class GPSLayer(nn.Module):
 
                 repeats = self.subgraph_encoder.output_mult+1
                 num_nodes = batch.x.shape[0]
+
+                if encoded_subgraphs.shape[0] != num_nodes:
+                    print('ERROR: The number of subgraphs is not the same as the number of nodes')
+                    print('Number of subgraphs:', encoded_subgraphs.shape[0])
+                    print('Number of nodes:', num_nodes)
                 
                 encodings_sequence = torch.cat([
                     encoded_subgraphs,
@@ -890,8 +897,6 @@ class GPSLayer(nn.Module):
 
                 # Copy heuristics where the first repeat has the right sign, the second is negated, and so on
                 heuristics_sequence = torch.repeat_interleave(heuristic, repeats, dim=0)
-                for i in range(1, repeats, 2):
-                    heuristics_sequence[i::repeats] = -heuristics_sequence[i::repeats]
                 batches_sequence = torch.repeat_interleave(batch.batch, repeats, dim=0)
                 subgraph_indices_sequence = torch.arange(repeats, device=encodings_sequence.device).repeat(num_nodes)
                 node_indices = (repeats-1) + repeats*torch.arange(num_nodes, device=encodings_sequence.device)
