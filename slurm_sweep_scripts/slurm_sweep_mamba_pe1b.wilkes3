@@ -79,7 +79,7 @@ seed=${seeds[$seed_index]}
 application="python"
 
 #! Run options for the application:
-options="main.py --cfg $config seed $seed wandb.project Experiments_round_1 wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+MambaL65 gt.mamba_heuristics global_pe_1_bidirectional"
+options="main.py --cfg $config seed $seed wandb.project Mamba_pe1b_Experiments_round_1 wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+SharedMambaL65 gt.mamba_heuristics global_pe_1_bidirectional gt.dropout 0.4"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory

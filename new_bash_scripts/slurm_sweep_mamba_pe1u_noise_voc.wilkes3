@@ -10,7 +10,7 @@
 
 #! sbatch directives begin here ###############################
 #! Name of the job:
-#SBATCH -J F_mamba_pe2b
+#SBATCH -J F_mamba_pe1u_noise
 #! Which project should be charged (NB Wilkes2 projects end in '-GPU'):
 #SBATCH -A COMPUTERLAB-SL2-GPU
 #! How many whole nodes should be allocated?
@@ -31,8 +31,8 @@
 #SBATCH --array=0-2
 
 # Output and Logs directory
-#SBATCH -o ./logs/exp1_mamba_pe2b_config-seed-job_%A_%a.out
-#SBATCH -e ./logs/exp1_mamba_pe2b_config-seed-job_%A_%a.err
+#SBATCH -o ./logs/exp1_mamba_pe1u_noise_config-seed-job_%A_%a.out
+#SBATCH -e ./logs/exp1_mamba_pe1u_noise_config-seed-job_%A_%a.err
 
 
 #! Do not change:
@@ -64,22 +64,12 @@ module load cuda/11.8
 conda init
 conda activate L65
 
-config="configs/Experiments/pascal-voc.yaml"
-seed=$SLURM_ARRAY_TASK_ID
-
-
-
-
-
-
-
-
 
 #! Full path to application executable: 
 application="python"
 
 #! Run options for the application:
-options="main.py --cfg $config seed $seed  wandb.project Mamba_pe2b_Experiments_round_1 wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+MambaL65 gt.mamba_heuristics global_pe_2_bidirectional"
+options="main.py --cfg configs/Experiments/pascal-voc.yaml seed $SLURM_ARRAY_TASK_ID  wandb.project Mamba_pe1u_noise_Experiments_round_1 wandb.entity l65 device cuda gt.layer_type CustomGatedGCN+MambaL65 gt.mamba_heuristics global_pe_1 gt.mamba_noise 0.1 mamba_permute_iterations 5 out_dir results/pe1u_noise"
 
 #! Work directory (i.e. where the job will run):
 workdir="$SLURM_SUBMIT_DIR"  # The value of SLURM_SUBMIT_DIR sets workdir to the directory
