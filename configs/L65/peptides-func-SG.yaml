@@ -47,8 +47,8 @@ gt:
   mamba_heuristics: global_pe_1
   mamba_permute_iterations: 3
   mamba_noise: 0.00
-  k_hop_max: 5
-  k_hop_min: 5
+  k_hop_max: 4
+  k_hop_min: 1
   num_samples_per_graph: 1
 gnn:
   head: default

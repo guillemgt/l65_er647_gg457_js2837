@@ -196,7 +196,17 @@ class EfficientSubgraphEncoder(nn.Module):
         y = torch.cat([z.unsqueeze(1) for z in xs], dim=1)
         y = y.view(-1, self.dim_out)
         y = self.out_proj(y)
-        return y.view(num_nodes, self.output_mult, self.dim_out)
+        try:
+            return y.view(num_nodes, self.output_mult, self.dim_out)
+        except Exception as e:
+            print("RESHAPING EXCEPTION:", e)
+            print("num_nodes:", num_nodes)
+            print("y.shape:", y.shape)
+            print("self.output_mult:", self.output_mult)
+            print("self.dim_out:", self.dim_out)
+            for i, z in enumerate(xs):
+                print(f"xs[{i}].shape:", z.shape)
+            return y.view(-1, self.output_mult, self.dim_out)
 
 
 
