@@ -137,29 +137,22 @@ class SubgraphEncoder(nn.Module):
 from torch_scatter import scatter, scatter_mean, scatter_max, scatter_sum
 import torch_geometric.nn as pyg_nn
 class AggregateLayer(pyg_nn.conv.MessagePassing):
-    """
-        GatedGCN layer
-        Residual Gated Graph ConvNets
-        https://arxiv.org/pdf/1711.07553.pdf
-    """
     def __init__(self, aggr='mean', **kwargs):
         super().__init__(aggr=aggr, **kwargs)
 
     def forward(self, batch):
         x, e, edge_index = batch.x, batch.edge_attr, batch.edge_index
-        x = self.propagate(edge_index,
-            x=x,
-            e=e)
+        x = self.propagate(edge_index, x=x, e=e)
         return x
 
     def message(self, x_i, x_j, e):
-        return x_i - x_j
+        return -x_j
 
-    def aggregate(self, inputs, index):
-        return scatter(inputs, index, dim=self.node_dim, reduce=self.aggr)
+    # def aggregate(self, inputs, index):
+    #     return scatter(inputs, index, 0, None, self.node_dim, reduce=self.aggr)
 
     def update(self, aggr_out, x):
-        return aggr_out
+        return x + aggr_out
     
 
 class EfficientSubgraphEncoder(nn.Module):
