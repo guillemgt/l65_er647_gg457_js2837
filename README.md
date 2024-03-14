@@ -25,7 +25,7 @@ Our additions include several new `global_model_type`s to the GraphGPS.layer GPS
 - MeanL65
 - ConvL65
 
-We use slurm to launch our experiments, sbatch scripts for this can be found in slurm_sweep_scripts and slurm_scripts. The base configuration files for the 3 datasets can be found in configs/Experiments.
+We use slurm to launch our experiments, sbatch scripts for this can be found in slurm_sweep_scripts and slurm_scripts. The base configuration files for the 3 datasets can be found in configs/Experiments. Other experiments can be found in bash_sweep_scripts and finished_sweep_scripts.
 
 ## Installation instructions:
 
