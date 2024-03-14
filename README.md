@@ -1,4 +1,4 @@
-# A New Family of GNNs using State Space Models
+# An Experimental Study of State Space Models for GNNs
 
 Evan Rex, Jad Sbai & Guillem Tarrach, A New Family of GNNs using State Space Models for Geometric Deep
 Learning (L65), University of Cambridge.
